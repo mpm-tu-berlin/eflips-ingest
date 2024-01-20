@@ -1,2 +1,55 @@
-def example() -> bool:
-    return True
+import os
+from functools import lru_cache
+from typing import Tuple
+
+import requests
+
+
+def get_altitude_openelevation(latlon: Tuple[float, float]) -> float:
+    """
+    Get altitude infomration for a given latitude and longitude
+    """
+
+    # If there is no "OPENELEVATION_URL" environment variable, fail
+    # with an error message
+    if not os.getenv("OPENELEVATION_URL"):
+        raise ValueError("OPENELEVATION_URL not set")
+    url = f"{os.getenv('OPENELEVATION_URL')}/lookup?locations={latlon[0]},{latlon[1]}"
+
+    # We use the requests library to get the data
+    response = requests.get(url)
+    response.raise_for_status()
+    data = response.json()
+    if "elevation" in data["results"][0]:
+        return data["results"][0]["elevation"]
+    else:
+        raise ValueError("No elevation found")
+
+
+# Since this is paid API we at least try to cache the results
+@lru_cache(maxsize=4096)
+def get_altitude_google(latlon: Tuple[float, float]) -> float:
+    """
+    Get altitude infomration for a given latitude and longitude
+    """
+    if not os.getenv("GOOGLE_MAPS_API_KEY"):
+        raise ValueError("GOOGLE_MAPS_API_KEY not set")
+
+    url = f"https://maps.googleapis.com/maps/api/elevation/json?locations={latlon[0]},{latlon[1]}&key={os.getenv('GOOGLE_MAPS_API_KEY')}"
+
+    response = requests.get(url)
+    response.raise_for_status()
+    data = response.json()
+    if data["status"] != "OK":
+        raise ValueError("No elevation found")
+    return data["results"][0]["elevation"]
+
+
+def get_altitude(latlon: Tuple[float, float]) -> float:
+    """
+    Get altitude infomration for a given latitude and longitude
+    """
+    try:
+        return get_altitude_openelevation(latlon)
+    except ValueError:
+        return get_altitude_google(latlon)
