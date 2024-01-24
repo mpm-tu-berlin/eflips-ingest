@@ -1,656 +1,627 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- W3C Schema generiert von XMLSpy v2024 (x64) (http://www.altova.com) -->
-<xs:schema targetNamespace="http://www.ivu.de/mb/intf/passengercount/remote/model/" xmlns="http://www.ivu.de/mb/intf/passengercount/remote/model/" xmlns:xs="http://www.w3.org/2001/XMLSchema">
-	<xs:element name="AnzeigeText" type="xs:string"/>
-	<xs:element name="Auftraggeber">
-		<xs:simpleType>
-			<xs:restriction base="xs:byte"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Beginn" type="xs:int"/>
-	<xs:element name="Betriebshof">
-		<xs:simpleType>
-			<xs:restriction base="xs:int"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Build">
-		<xs:simpleType>
-			<xs:restriction base="xs:string"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Datenversion">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="deploymentID"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Ende" type="xs:int"/>
-	<xs:element name="Endpunkt" type="xs:int"/>
-	<xs:element name="EntfernungVomStart">
-		<xs:simpleType>
-			<xs:restriction base="xs:short"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Ergebnis">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="ReturnCode"/>
-				<xs:element ref="Meldungsliste"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Fahrgastwechsel">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="J"/>
-				<xs:enumeration value="N"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Fahrplanbuchname" type="xs:string"/>
-	<xs:element name="Fahrt">
-		<xs:complexType>
-			<xs:choice>
-				<xs:sequence>
-					<xs:element ref="ID"/>
-					<xs:element ref="Linie"/>
-					<xs:element ref="fahrgastrelevant"/>
-					<xs:element ref="LfdNrRoutenvariante"/>
-					<xs:element ref="Startzeit"/>
-					<xs:element ref="Fahrtart"/>
-					<xs:element ref="Fahrzeitprofil"/>
-					<xs:element ref="Fahrzeugtyp"/>
-					<xs:choice>
-						<xs:sequence>
-							<xs:element ref="Fremdunternehmer"/>
-							<xs:element ref="Auftraggeber" minOccurs="0"/>
-							<xs:element ref="veroeffentlicht"/>
-						</xs:sequence>
-						<xs:sequence>
-							<xs:element ref="Auftraggeber" minOccurs="0"/>
-							<xs:element ref="veroeffentlicht"/>
-						</xs:sequence>
-					</xs:choice>
-				</xs:sequence>
-				<xs:sequence>
-					<xs:element ref="LfdNr"/>
-					<xs:element ref="FahrtID"/>
-				</xs:sequence>
-			</xs:choice>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="FahrtDaten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Fahrt" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="FahrtID" type="xs:int"/>
-	<xs:element name="Fahrtart">
-		<xs:simpleType>
-			<xs:restriction base="xs:string"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Fahrtreihenfolge">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Fahrt" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Fahrzeitprofil">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="FahrzeitprofilNummer"/>
-				<xs:element ref="Fahrzeitprofilpunkte"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="FahrzeitprofilNummer" type="xs:byte"/>
-	<xs:element name="Fahrzeitprofile">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Fahrzeitprofil" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Fahrzeitprofilpunkte">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Punkt" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Fahrzeugtyp">
-		<xs:simpleType>
-			<xs:restriction base="xs:string"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Fahrzeugumlauf">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:element ref="Betriebshof"/>
-				<xs:element ref="Fahrzeugtyp"/>
-				<xs:element ref="Umlaeufe"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="FahrzeugumlaufDaten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Fahrzeugumlauf" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Fremdunternehmer">
-		<xs:simpleType>
-			<xs:restriction base="xs:int"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Gebietskoerperschaft">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="Kurzname"/>
-				<xs:element ref="Langname"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Gebietskoerperschaften">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Gebietskoerperschaft" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Generierung">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Startzeitpunkt"/>
-				<xs:element ref="Schnittstellenversion"/>
-				<xs:element ref="Datenversion"/>
-				<xs:element ref="Ergebnis"/>
-				<xs:element ref="GenerierungsParameter"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="GenerierungsParameter">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Parameter" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Gueltigkeiten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Kalenderzeitraum"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Haltestellenbereich">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="Nummer"/>
-				<xs:element ref="Kurzname"/>
-				<xs:element ref="Fahrplanbuchname"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Haltestellenbereiche">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Haltestellenbereich" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Hauptroute">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="J"/>
-				<xs:enumeration value="N"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="ID" type="xs:int"/>
-	<xs:element name="Kalenderdatum">
-		<xs:simpleType>
-			<xs:restriction base="xs:string"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Kalendertag" type="xs:string"/>
-	<xs:element name="Kalenderzeitraum">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Kalendertag" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Kurzname" type="xs:string"/>
-	<xs:element name="Langname" type="xs:string"/>
-	<xs:element name="LfdNr" type="xs:byte"/>
-	<xs:element name="LfdNrRoute" type="xs:byte"/>
-	<xs:element name="LfdNrRoutenvariante" type="xs:byte"/>
-	<xs:element name="Linie">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="Kurzname"/>
-				<xs:element ref="zugeordneteBetriebshoefe"/>
-				<xs:element ref="RoutenDaten"/>
-				<xs:element ref="Routenvarianten"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="LinienDaten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Linie"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
+<xs:schema targetNamespace="http://www.ivu.de/mb/intf/passengercount/remote/model/" elementFormDefault="qualified" xmlns="http://www.ivu.de/mb/intf/passengercount/remote/model/" xmlns:xs="http://www.w3.org/2001/XMLSchema">
 	<xs:element name="Linienfahrplan">
 		<xs:complexType>
 			<xs:sequence>
-				<xs:element ref="Generierung"/>
-				<xs:sequence minOccurs="0">
-					<xs:element ref="StreckennetzDaten"/>
-					<xs:element ref="LinienDaten"/>
-					<xs:element ref="FahrtDaten"/>
-					<xs:element ref="FahrzeugumlaufDaten"/>
-				</xs:sequence>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Meldung">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Meldungskategorie"/>
-				<xs:element ref="Meldungsnummer"/>
-				<xs:element ref="Meldungstext"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Meldungskategorie">
-		<xs:simpleType>
-			<xs:restriction base="xs:byte">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="2"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Meldungsliste">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Meldung"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Meldungsnummer">
-		<xs:simpleType>
-			<xs:restriction base="xs:byte">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="18"/>
-				<xs:enumeration value="5"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Meldungstext">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="Anfrage wurde korrekt abgearbeitet."/>
-				<xs:enumeration value="Keine Umläufe vorhanden."/>
-				<xs:enumeration value="Keine gültige Linie."/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Name">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="Betriebsbereich"/>
-				<xs:enumeration value="KeineAnzeigedaten"/>
-				<xs:enumeration value="KeineGueltigkeiten"/>
-				<xs:enumeration value="Linie"/>
-				<xs:enumeration value="Meldungskategorie"/>
-				<xs:enumeration value="Stichtag"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Netzpunkt">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="Nummer"/>
-				<xs:element ref="Kurzname"/>
-				<xs:element ref="Langname"/>
-				<xs:element ref="Netzpunkttyp"/>
-				<xs:element ref="Xkoordinate"/>
-				<xs:element ref="Ykoordinate"/>
-				<xs:element ref="Haltestellenbereich" minOccurs="0"/>
-				<xs:element ref="mitFahrgastwechsel"/>
-				<xs:element ref="Gebietskoerperschaften"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Netzpunkte">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Netzpunkt" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Netzpunkttyp">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="APkt"/>
-				<xs:enumeration value="BPunkt"/>
-				<xs:enumeration value="EPkt"/>
-				<xs:enumeration value="GPkt"/>
-				<xs:enumeration value="Hst"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Nummer" type="xs:int"/>
-	<xs:element name="Parameter">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Name"/>
-				<xs:element ref="Wert"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Punkt">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:choice>
-					<xs:sequence>
-						<xs:element ref="Netzpunkt"/>
-						<xs:element ref="Fahrgastwechsel"/>
-						<xs:element ref="veroeffentlicht"/>
-						<xs:element ref="Zielanzeige" minOccurs="0"/>
-					</xs:sequence>
-					<xs:sequence>
-						<xs:element ref="Streckenfahrzeit"/>
-						<xs:element ref="Wartezeit"/>
-					</xs:sequence>
-					<xs:element ref="veroeffentlicht"/>
-				</xs:choice>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Punktfolge">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Punkt" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Release">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="21.2.0-20220203-0833-898844"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="ReturnCode">
-		<xs:simpleType>
-			<xs:restriction base="xs:byte">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="1"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Richtung">
-		<xs:simpleType>
-			<xs:restriction base="xs:byte">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="1"/>
-				<xs:enumeration value="2"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Route">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:element ref="externeRoutennummer"/>
-				<xs:element ref="Richtung"/>
-				<xs:element ref="Hauptroute"/>
-				<xs:element ref="Zielanzeigen"/>
-				<xs:element ref="Streckenfolge"/>
-				<xs:element ref="Punktfolge"/>
-				<xs:element ref="Fahrzeitprofile"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="RoutenDaten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Route" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Routenvariante">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:element ref="LfdNrRoute"/>
-				<xs:sequence minOccurs="0">
-					<xs:element ref="abweichenderAuftraggeber"/>
-					<xs:element ref="abweichendeVeroeffentlichung" minOccurs="0"/>
-				</xs:sequence>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Routenvarianten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Routenvariante" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Schnittstellenversion">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Version"/>
-				<xs:element ref="Release"/>
-				<xs:element ref="Build"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Startpunkt" type="xs:int"/>
-	<xs:element name="Startzeit" type="xs:int"/>
-	<xs:element name="Startzeitpunkt" type="xs:string"/>
-	<xs:element name="Strecke">
-		<xs:complexType>
-			<xs:choice>
-				<xs:sequence>
-					<xs:element ref="ID"/>
-					<xs:element ref="Startpunkt"/>
-					<xs:element ref="Endpunkt"/>
-					<xs:element ref="Streckenlaenge"/>
-					<xs:element ref="Zwischenpunkte"/>
-				</xs:sequence>
-				<xs:sequence>
-					<xs:element ref="LfdNr"/>
-					<xs:choice>
+				<xs:element name="Generierung">
+					<xs:complexType>
 						<xs:sequence>
-							<xs:element ref="StreckenID"/>
-							<xs:element ref="Auftraggeber" minOccurs="0"/>
+							<xs:element name="Startzeitpunkt" type="xs:string"/>
+							<xs:element name="Schnittstellenversion">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="Version">
+											<xs:simpleType>
+												<xs:restriction base="xs:decimal"/>
+											</xs:simpleType>
+										</xs:element>
+										<xs:element name="Release">
+											<xs:simpleType>
+												<xs:restriction base="xs:string"/>
+											</xs:simpleType>
+										</xs:element>
+										<xs:element name="Build">
+											<xs:simpleType>
+												<xs:restriction base="xs:string"/>
+											</xs:simpleType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Datenversion">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="deploymentID">
+											<xs:simpleType>
+												<xs:restriction base="xs:string"/>
+											</xs:simpleType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="Ergebnis">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="ReturnCode">
+											<xs:simpleType>
+												<xs:restriction base="xs:byte">
+													<xs:enumeration value="0"/>
+													<xs:enumeration value="1"/>
+												</xs:restriction>
+											</xs:simpleType>
+										</xs:element>
+										<xs:element name="Meldungsliste">
+											<xs:complexType>
+												<xs:sequence>
+													<xs:element name="Meldung">
+														<xs:complexType>
+															<xs:sequence>
+																<xs:element name="Meldungskategorie">
+																	<xs:simpleType>
+																		<xs:restriction base="xs:byte">
+																			<xs:enumeration value="0"/>
+																			<xs:enumeration value="2"/>
+																		</xs:restriction>
+																	</xs:simpleType>
+																</xs:element>
+																<xs:element name="Meldungsnummer">
+																	<xs:simpleType>
+																		<xs:restriction base="xs:byte">
+																			<xs:enumeration value="0"/>
+																			<xs:enumeration value="18"/>
+																			<xs:enumeration value="5"/>
+																		</xs:restriction>
+																	</xs:simpleType>
+																</xs:element>
+																<xs:element name="Meldungstext">
+																	<xs:simpleType>
+																		<xs:restriction base="xs:string">
+																			<xs:enumeration value="Anfrage wurde korrekt abgearbeitet."/>
+																			<xs:enumeration value="Keine Umläufe vorhanden."/>
+																			<xs:enumeration value="Keine gültige Linie."/>
+																		</xs:restriction>
+																	</xs:simpleType>
+																</xs:element>
+															</xs:sequence>
+														</xs:complexType>
+													</xs:element>
+												</xs:sequence>
+											</xs:complexType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
+							<xs:element name="GenerierungsParameter">
+								<xs:complexType>
+									<xs:sequence>
+										<xs:element name="Parameter" maxOccurs="unbounded">
+											<xs:complexType>
+												<xs:sequence>
+													<xs:element name="Name">
+														<xs:simpleType>
+															<xs:restriction base="xs:string">
+																<xs:enumeration value="Betriebsbereich"/>
+																<xs:enumeration value="KeineAnzeigedaten"/>
+																<xs:enumeration value="KeineGueltigkeiten"/>
+																<xs:enumeration value="Linie"/>
+																<xs:enumeration value="Meldungskategorie"/>
+																<xs:enumeration value="Stichtag"/>
+															</xs:restriction>
+														</xs:simpleType>
+													</xs:element>
+													<xs:element name="Wert" type="xs:string"/>
+												</xs:sequence>
+											</xs:complexType>
+										</xs:element>
+									</xs:sequence>
+								</xs:complexType>
+							</xs:element>
 						</xs:sequence>
-						<xs:element ref="Auftraggeber"/>
-					</xs:choice>
+					</xs:complexType>
+				</xs:element>
+				<xs:sequence minOccurs="0">
+					<xs:element name="StreckennetzDaten">
+						<xs:complexType>
+							<xs:sequence>
+								<xs:element name="Haltestellenbereiche">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="Haltestellenbereich" minOccurs="0" maxOccurs="unbounded">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Nummer" type="xs:int"/>
+														<xs:element name="Kurzname" type="xs:string"/>
+														<xs:element name="Fahrplanbuchname" type="xs:string"/>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+								<xs:element name="Netzpunkte">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="Netzpunkt" minOccurs="0" maxOccurs="unbounded">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Nummer" type="xs:int"/>
+														<xs:element name="Kurzname" type="xs:string"/>
+														<xs:element name="Langname" type="xs:string"/>
+														<xs:element name="Netzpunkttyp">
+															<xs:simpleType>
+																<xs:restriction base="xs:string">
+																	<xs:enumeration value="APkt"/>
+																	<xs:enumeration value="BPunkt"/>
+																	<xs:enumeration value="EPkt"/>
+																	<xs:enumeration value="GPkt"/>
+																	<xs:enumeration value="Hst"/>
+																</xs:restriction>
+															</xs:simpleType>
+														</xs:element>
+														<xs:element name="Xkoordinate" type="xs:int"/>
+														<xs:element name="Ykoordinate" type="xs:int"/>
+														<xs:element name="Haltestellenbereich" minOccurs="0" type="xs:int"/>
+														<xs:element name="mitFahrgastwechsel">
+															<xs:simpleType>
+																<xs:restriction base="xs:string">
+																	<xs:enumeration value="J"/>
+																	<xs:enumeration value="N"/>
+																</xs:restriction>
+															</xs:simpleType>
+														</xs:element>
+														<xs:element name="Gebietskoerperschaften">
+															<xs:complexType>
+																<xs:sequence>
+																	<xs:element name="Gebietskoerperschaft" minOccurs="0" maxOccurs="unbounded">
+																		<xs:simpleType>
+																			<xs:restriction base="xs:string"/>
+																		</xs:simpleType>
+																	</xs:element>
+																</xs:sequence>
+															</xs:complexType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+								<xs:element name="Gebietskoerperschaften">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="Gebietskoerperschaft" minOccurs="0" maxOccurs="unbounded">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Kurzname">
+															<xs:simpleType>
+																<xs:restriction base="xs:string"/>
+															</xs:simpleType>
+														</xs:element>
+														<xs:element name="Langname">
+															<xs:simpleType>
+																<xs:restriction base="xs:string"/>
+															</xs:simpleType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+								<xs:element name="Strecken">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="Strecke" minOccurs="0" maxOccurs="unbounded">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="ID" type="xs:short"/>
+														<xs:element name="Startpunkt" type="xs:int"/>
+														<xs:element name="Endpunkt" type="xs:int"/>
+														<xs:element name="Streckenlaenge" type="xs:short"/>
+														<xs:element name="Zwischenpunkte">
+															<xs:complexType>
+																<xs:sequence>
+																	<xs:element name="Zwischenpunkt" minOccurs="0">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Netzpunkt">
+																					<xs:simpleType>
+																						<xs:restriction base="xs:int"/>
+																					</xs:simpleType>
+																				</xs:element>
+																				<xs:element name="EntfernungVomStart">
+																					<xs:simpleType>
+																						<xs:restriction base="xs:short"/>
+																					</xs:simpleType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																</xs:sequence>
+															</xs:complexType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+							</xs:sequence>
+						</xs:complexType>
+					</xs:element>
+					<xs:element name="LinienDaten">
+						<xs:complexType>
+							<xs:sequence>
+								<xs:element name="Linie">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="Kurzname" type="xs:string"/>
+											<xs:element name="zugeordneteBetriebshoefe">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Betriebshof" minOccurs="0" maxOccurs="unbounded">
+															<xs:simpleType>
+																<xs:restriction base="xs:int"/>
+															</xs:simpleType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+											<xs:element name="RoutenDaten">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Route" minOccurs="0" maxOccurs="unbounded">
+															<xs:complexType>
+																<xs:sequence>
+																	<xs:element name="LfdNr" type="xs:byte"/>
+																	<xs:element name="externeRoutennummer" type="xs:short"/>
+																	<xs:element name="Richtung">
+																		<xs:simpleType>
+																			<xs:restriction base="xs:byte">
+																				<xs:enumeration value="0"/>
+																				<xs:enumeration value="1"/>
+																				<xs:enumeration value="2"/>
+																			</xs:restriction>
+																		</xs:simpleType>
+																	</xs:element>
+																	<xs:element name="Hauptroute">
+																		<xs:simpleType>
+																			<xs:restriction base="xs:string">
+																				<xs:enumeration value="J"/>
+																				<xs:enumeration value="N"/>
+																			</xs:restriction>
+																		</xs:simpleType>
+																	</xs:element>
+																	<xs:element name="Zielanzeigen">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Zielanzeige" minOccurs="0" maxOccurs="unbounded">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="Nummer" type="xs:short"/>
+																							<xs:element name="AnzeigeText" type="xs:string"/>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																	<xs:element name="Streckenfolge">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Strecke" maxOccurs="unbounded">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="LfdNr" type="xs:byte"/>
+																							<xs:element name="StreckenID" type="xs:short"/>
+																							<xs:element name="Auftraggeber" minOccurs="0">
+																								<xs:simpleType>
+																									<xs:restriction base="xs:byte">
+																										<xs:enumeration value="1"/>
+																									</xs:restriction>
+																								</xs:simpleType>
+																							</xs:element>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																	<xs:element name="Punktfolge">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Punkt" maxOccurs="unbounded">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="LfdNr" type="xs:byte"/>
+																							<xs:element name="Netzpunkt" type="xs:int"/>
+																							<xs:element name="Fahrgastwechsel">
+																								<xs:simpleType>
+																									<xs:restriction base="xs:string">
+																										<xs:enumeration value="J"/>
+																										<xs:enumeration value="N"/>
+																									</xs:restriction>
+																								</xs:simpleType>
+																							</xs:element>
+																							<xs:element name="veroeffentlicht">
+																								<xs:simpleType>
+																									<xs:restriction base="xs:string">
+																										<xs:enumeration value="J"/>
+																										<xs:enumeration value="N"/>
+																									</xs:restriction>
+																								</xs:simpleType>
+																							</xs:element>
+																							<xs:element name="Zielanzeige" minOccurs="0" type="xs:short"/>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																	<xs:element name="Fahrzeitprofile">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Fahrzeitprofil" maxOccurs="unbounded">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="FahrzeitprofilNummer" type="xs:byte"/>
+																							<xs:element name="Fahrzeitprofilpunkte">
+																								<xs:complexType>
+																									<xs:sequence>
+																										<xs:element name="Punkt" maxOccurs="unbounded">
+																											<xs:complexType>
+																												<xs:sequence>
+																													<xs:element name="LfdNr" type="xs:byte"/>
+																													<xs:element name="Streckenfahrzeit" type="xs:short"/>
+																													<xs:element name="Wartezeit">
+																														<xs:simpleType>
+																															<xs:restriction base="xs:int"/>
+																														</xs:simpleType>
+																													</xs:element>
+																												</xs:sequence>
+																											</xs:complexType>
+																										</xs:element>
+																									</xs:sequence>
+																								</xs:complexType>
+																							</xs:element>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																</xs:sequence>
+															</xs:complexType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+											<xs:element name="Routenvarianten">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Routenvariante" minOccurs="0" maxOccurs="unbounded">
+															<xs:complexType>
+																<xs:sequence>
+																	<xs:element name="LfdNr" type="xs:byte"/>
+																	<xs:element name="LfdNrRoute" type="xs:byte"/>
+																	<xs:sequence minOccurs="0">
+																		<xs:element name="abweichenderAuftraggeber">
+																			<xs:complexType>
+																				<xs:sequence>
+																					<xs:element name="Strecke" maxOccurs="unbounded">
+																						<xs:complexType>
+																							<xs:sequence>
+																								<xs:element name="LfdNr" type="xs:byte"/>
+																								<xs:element name="Auftraggeber">
+																									<xs:simpleType>
+																										<xs:restriction base="xs:byte">
+																											<xs:enumeration value="1"/>
+																										</xs:restriction>
+																									</xs:simpleType>
+																								</xs:element>
+																							</xs:sequence>
+																						</xs:complexType>
+																					</xs:element>
+																				</xs:sequence>
+																			</xs:complexType>
+																		</xs:element>
+																		<xs:element name="abweichendeVeroeffentlichung" minOccurs="0">
+																			<xs:complexType>
+																				<xs:sequence>
+																					<xs:element name="Punkt" maxOccurs="unbounded">
+																						<xs:complexType>
+																							<xs:sequence>
+																								<xs:element name="LfdNr" type="xs:byte"/>
+																								<xs:element name="veroeffentlicht">
+																									<xs:simpleType>
+																										<xs:restriction base="xs:string">
+																											<xs:enumeration value="N"/>
+																										</xs:restriction>
+																									</xs:simpleType>
+																								</xs:element>
+																							</xs:sequence>
+																						</xs:complexType>
+																					</xs:element>
+																				</xs:sequence>
+																			</xs:complexType>
+																		</xs:element>
+																	</xs:sequence>
+																</xs:sequence>
+															</xs:complexType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+							</xs:sequence>
+						</xs:complexType>
+					</xs:element>
+					<xs:element name="FahrtDaten">
+						<xs:complexType>
+							<xs:sequence>
+								<xs:element name="Fahrt" minOccurs="0" maxOccurs="unbounded">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="ID" type="xs:int"/>
+											<xs:element name="Linie" type="xs:string"/>
+											<xs:element name="fahrgastrelevant">
+												<xs:simpleType>
+													<xs:restriction base="xs:string">
+														<xs:enumeration value="J"/>
+														<xs:enumeration value="N"/>
+													</xs:restriction>
+												</xs:simpleType>
+											</xs:element>
+											<xs:element name="LfdNrRoutenvariante" type="xs:byte"/>
+											<xs:element name="Startzeit" type="xs:int"/>
+											<xs:element name="Fahrtart">
+												<xs:simpleType>
+													<xs:restriction base="xs:string"/>
+												</xs:simpleType>
+											</xs:element>
+											<xs:element name="Fahrzeitprofil" type="xs:byte"/>
+											<xs:element name="Fahrzeugtyp">
+												<xs:simpleType>
+													<xs:restriction base="xs:string"/>
+												</xs:simpleType>
+											</xs:element>
+											<xs:choice>
+												<xs:sequence>
+													<xs:element name="Fremdunternehmer">
+														<xs:simpleType>
+															<xs:restriction base="xs:int"/>
+														</xs:simpleType>
+													</xs:element>
+													<xs:element name="Auftraggeber" minOccurs="0" type="T41_Auftraggeber"/>
+													<xs:element name="veroeffentlicht" type="T41_veroeffentlicht"/>
+												</xs:sequence>
+												<xs:sequence>
+													<xs:element name="Auftraggeber" minOccurs="0" type="T41_Auftraggeber"/>
+													<xs:element name="veroeffentlicht" type="T41_veroeffentlicht"/>
+												</xs:sequence>
+											</xs:choice>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+							</xs:sequence>
+						</xs:complexType>
+					</xs:element>
+					<xs:element name="FahrzeugumlaufDaten">
+						<xs:complexType>
+							<xs:sequence>
+								<xs:element name="Fahrzeugumlauf" minOccurs="0" maxOccurs="unbounded">
+									<xs:complexType>
+										<xs:sequence>
+											<xs:element name="LfdNr" type="xs:byte"/>
+											<xs:element name="Betriebshof">
+												<xs:simpleType>
+													<xs:restriction base="xs:int"/>
+												</xs:simpleType>
+											</xs:element>
+											<xs:element name="Fahrzeugtyp">
+												<xs:simpleType>
+													<xs:restriction base="xs:string"/>
+												</xs:simpleType>
+											</xs:element>
+											<xs:element name="Umlaeufe">
+												<xs:complexType>
+													<xs:sequence>
+														<xs:element name="Umlauf" maxOccurs="unbounded">
+															<xs:complexType>
+																<xs:sequence>
+																	<xs:element name="LfdNr">
+																		<xs:simpleType>
+																			<xs:restriction base="xs:byte"/>
+																		</xs:simpleType>
+																	</xs:element>
+																	<xs:element name="UmlaufID" type="xs:int"/>
+																	<xs:element name="Umlaufbezeichnung" type="xs:string"/>
+																	<xs:element name="Kalenderdatum">
+																		<xs:simpleType>
+																			<xs:restriction base="xs:string"/>
+																		</xs:simpleType>
+																	</xs:element>
+																	<xs:element name="Umlaufteilgruppen">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Umlaufteilgruppe" maxOccurs="unbounded">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="LfdNr" type="xs:byte"/>
+																							<xs:element name="Wagenfolgenummer" type="xs:byte"/>
+																							<xs:element name="Linie" type="xs:string"/>
+																							<xs:choice>
+																								<xs:sequence>
+																									<xs:element name="Beginn" type="xs:int"/>
+																									<xs:element name="Ende" type="xs:int"/>
+																									<xs:element name="Fahrzeugtyp" type="T47_Fahrzeugtyp"/>
+																									<xs:element name="Fahrtreihenfolge">
+																										<xs:complexType>
+																											<xs:sequence>
+																												<xs:element name="Fahrt" maxOccurs="unbounded">
+																													<xs:complexType>
+																														<xs:sequence>
+																															<xs:element name="LfdNr" type="xs:byte"/>
+																															<xs:element name="FahrtID" type="xs:int"/>
+																														</xs:sequence>
+																													</xs:complexType>
+																												</xs:element>
+																											</xs:sequence>
+																										</xs:complexType>
+																									</xs:element>
+																								</xs:sequence>
+																								<xs:element name="Fahrzeugtyp" type="T47_Fahrzeugtyp"/>
+																							</xs:choice>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																	<xs:element name="Gueltigkeiten">
+																		<xs:complexType>
+																			<xs:sequence>
+																				<xs:element name="Kalenderzeitraum">
+																					<xs:complexType>
+																						<xs:sequence>
+																							<xs:element name="Kalendertag" maxOccurs="unbounded" type="xs:string"/>
+																						</xs:sequence>
+																					</xs:complexType>
+																				</xs:element>
+																			</xs:sequence>
+																		</xs:complexType>
+																	</xs:element>
+																</xs:sequence>
+															</xs:complexType>
+														</xs:element>
+													</xs:sequence>
+												</xs:complexType>
+											</xs:element>
+										</xs:sequence>
+									</xs:complexType>
+								</xs:element>
+							</xs:sequence>
+						</xs:complexType>
+					</xs:element>
 				</xs:sequence>
-			</xs:choice>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Strecken">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Strecke" minOccurs="0" maxOccurs="unbounded"/>
 			</xs:sequence>
 		</xs:complexType>
 	</xs:element>
-	<xs:element name="StreckenID" type="xs:short"/>
-	<xs:element name="Streckenfahrzeit" type="xs:short"/>
-	<xs:element name="Streckenfolge">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Strecke" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Streckenlaenge" type="xs:short"/>
-	<xs:element name="StreckennetzDaten">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Haltestellenbereiche"/>
-				<xs:element ref="Netzpunkte"/>
-				<xs:element ref="Gebietskoerperschaften"/>
-				<xs:element ref="Strecken"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Umlaeufe">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Umlauf" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Umlauf">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:element ref="UmlaufID"/>
-				<xs:element ref="Umlaufbezeichnung"/>
-				<xs:element ref="Kalenderdatum"/>
-				<xs:element ref="Umlaufteilgruppen"/>
-				<xs:element ref="Gueltigkeiten"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="UmlaufID" type="xs:int"/>
-	<xs:element name="Umlaufbezeichnung" type="xs:string"/>
-	<xs:element name="Umlaufteilgruppe">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="LfdNr"/>
-				<xs:element ref="Wagenfolgenummer"/>
-				<xs:element ref="Linie"/>
-				<xs:choice>
-					<xs:sequence>
-						<xs:element ref="Beginn"/>
-						<xs:element ref="Ende"/>
-						<xs:element ref="Fahrzeugtyp"/>
-						<xs:element ref="Fahrtreihenfolge"/>
-					</xs:sequence>
-					<xs:element ref="Fahrzeugtyp"/>
-				</xs:choice>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Umlaufteilgruppen">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Umlaufteilgruppe" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Version">
-		<xs:simpleType>
-			<xs:restriction base="xs:decimal"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Wagenfolgenummer" type="xs:byte"/>
-	<xs:element name="Wartezeit">
-		<xs:simpleType>
-			<xs:restriction base="xs:int"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="Wert" type="xs:string"/>
-	<xs:element name="Xkoordinate" type="xs:int"/>
-	<xs:element name="Ykoordinate" type="xs:int"/>
-	<xs:element name="Zielanzeige">
-		<xs:complexType mixed="true">
-			<xs:sequence minOccurs="0">
-				<xs:element ref="Nummer"/>
-				<xs:element ref="AnzeigeText"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Zielanzeigen">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Zielanzeige" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Zwischenpunkt">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Netzpunkt"/>
-				<xs:element ref="EntfernungVomStart"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="Zwischenpunkte">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Zwischenpunkt" minOccurs="0"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="abweichendeVeroeffentlichung">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Punkt" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="abweichenderAuftraggeber">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Strecke" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
-	<xs:element name="deploymentID">
-		<xs:simpleType>
-			<xs:restriction base="xs:string"/>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="externeRoutennummer" type="xs:short"/>
-	<xs:element name="fahrgastrelevant">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="J"/>
-				<xs:enumeration value="N"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="mitFahrgastwechsel">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="J"/>
-				<xs:enumeration value="N"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="veroeffentlicht">
-		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="J"/>
-				<xs:enumeration value="N"/>
-			</xs:restriction>
-		</xs:simpleType>
-	</xs:element>
-	<xs:element name="zugeordneteBetriebshoefe">
-		<xs:complexType>
-			<xs:sequence>
-				<xs:element ref="Betriebshof" minOccurs="0" maxOccurs="unbounded"/>
-			</xs:sequence>
-		</xs:complexType>
-	</xs:element>
+	<xs:simpleType name="T41_Auftraggeber">
+		<xs:restriction base="xs:byte">
+			<xs:enumeration value="1"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="T41_veroeffentlicht">
+		<xs:restriction base="xs:string">
+			<xs:enumeration value="J"/>
+			<xs:enumeration value="N"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="T47_Fahrzeugtyp">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
 </xs:schema>
