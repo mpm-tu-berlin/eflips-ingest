@@ -1,45 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
-
 <!-- W3C Schema generiert von XMLSpy v2024 (x64) (http://www.altova.com) -->
 <xs:schema targetNamespace="http://www.ivu.de/mb/intf/passengercount/remote/model/" xmlns="http://www.ivu.de/mb/intf/passengercount/remote/model/" xmlns:xs="http://www.w3.org/2001/XMLSchema">
 	<xs:element name="AnzeigeText" type="xs:string"/>
 	<xs:element name="Auftraggeber">
 		<xs:simpleType>
-			<xs:restriction base="xs:byte">
-				<xs:enumeration value="1"/>
-			</xs:restriction>
+			<xs:restriction base="xs:byte"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Beginn" type="xs:int"/>
 	<xs:element name="Betriebshof">
 		<xs:simpleType>
-			<xs:restriction base="xs:int">
-				<xs:enumeration value="29421"/>
-				<xs:enumeration value="29422"/>
-				<xs:enumeration value="29425"/>
-				<xs:enumeration value="29439"/>
-				<xs:enumeration value="39420"/>
-				<xs:enumeration value="59410"/>
-				<xs:enumeration value="59411"/>
-				<xs:enumeration value="59412"/>
-				<xs:enumeration value="59417"/>
-				<xs:enumeration value="59424"/>
-				<xs:enumeration value="69437"/>
-				<xs:enumeration value="69449"/>
-				<xs:enumeration value="9407"/>
-				<xs:enumeration value="9408"/>
-				<xs:enumeration value="9409"/>
-				<xs:enumeration value="9410"/>
-				<xs:enumeration value="9411"/>
-				<xs:enumeration value="9424"/>
-			</xs:restriction>
+			<xs:restriction base="xs:int"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Build">
 		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="976535_2120_324885_trafficrestrictions"/>
-			</xs:restriction>
+			<xs:restriction base="xs:string"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Datenversion">
@@ -53,10 +29,7 @@
 	<xs:element name="Endpunkt" type="xs:int"/>
 	<xs:element name="EntfernungVomStart">
 		<xs:simpleType>
-			<xs:restriction base="xs:short">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="249"/>
-			</xs:restriction>
+			<xs:restriction base="xs:short"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Ergebnis">
@@ -117,24 +90,7 @@
 	<xs:element name="FahrtID" type="xs:int"/>
 	<xs:element name="Fahrtart">
 		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="A"/>
-				<xs:enumeration value="AS"/>
-				<xs:enumeration value="B"/>
-				<xs:enumeration value="E"/>
-				<xs:enumeration value="E1"/>
-				<xs:enumeration value="E2"/>
-				<xs:enumeration value="E3"/>
-				<xs:enumeration value="E4"/>
-				<xs:enumeration value="E6"/>
-				<xs:enumeration value="E7"/>
-				<xs:enumeration value="E8"/>
-				<xs:enumeration value="NV"/>
-				<xs:enumeration value="S3"/>
-				<xs:enumeration value="S4"/>
-				<xs:enumeration value="SF"/>
-				<xs:enumeration value="ST"/>
-			</xs:restriction>
+			<xs:restriction base="xs:string"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Fahrtreihenfolge">
@@ -169,21 +125,7 @@
 	</xs:element>
 	<xs:element name="Fahrzeugtyp">
 		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="CKB"/>
-				<xs:enumeration value="D"/>
-				<xs:enumeration value="DL"/>
-				<xs:enumeration value="DN"/>
-				<xs:enumeration value="EE"/>
-				<xs:enumeration value="EED"/>
-				<xs:enumeration value="EED-40"/>
-				<xs:enumeration value="EN"/>
-				<xs:enumeration value="EN3"/>
-				<xs:enumeration value="GEG"/>
-				<xs:enumeration value="GN"/>
-				<xs:enumeration value="MN"/>
-				<xs:enumeration value="VDL"/>
-			</xs:restriction>
+			<xs:restriction base="xs:string"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Fahrzeugumlauf">
@@ -205,20 +147,7 @@
 	</xs:element>
 	<xs:element name="Fremdunternehmer">
 		<xs:simpleType>
-			<xs:restriction base="xs:int">
-				<xs:enumeration value="10315"/>
-				<xs:enumeration value="10416"/>
-				<xs:enumeration value="10516"/>
-				<xs:enumeration value="30001"/>
-				<xs:enumeration value="40001"/>
-				<xs:enumeration value="40002"/>
-				<xs:enumeration value="40004"/>
-				<xs:enumeration value="40007"/>
-				<xs:enumeration value="40009"/>
-				<xs:enumeration value="40014"/>
-				<xs:enumeration value="40019"/>
-				<xs:enumeration value="40022"/>
-			</xs:restriction>
+			<xs:restriction base="xs:int"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Gebietskoerperschaft">
@@ -288,17 +217,7 @@
 	<xs:element name="ID" type="xs:int"/>
 	<xs:element name="Kalenderdatum">
 		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="02.07.2023"/>
-				<xs:enumeration value="03.07.2023"/>
-				<xs:enumeration value="04.07.2023"/>
-				<xs:enumeration value="05.07.2023"/>
-				<xs:enumeration value="06.07.2023"/>
-				<xs:enumeration value="07.07.2023"/>
-				<xs:enumeration value="08.07.2023"/>
-				<xs:enumeration value="09.07.2023"/>
-				<xs:enumeration value="10.07.2023"/>
-			</xs:restriction>
+			<xs:restriction base="xs:string"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Kalendertag" type="xs:string"/>
@@ -641,27 +560,13 @@
 	</xs:element>
 	<xs:element name="Version">
 		<xs:simpleType>
-			<xs:restriction base="xs:decimal">
-				<xs:enumeration value="1.2"/>
-			</xs:restriction>
+			<xs:restriction base="xs:decimal"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Wagenfolgenummer" type="xs:byte"/>
 	<xs:element name="Wartezeit">
 		<xs:simpleType>
-			<xs:restriction base="xs:int">
-				<xs:enumeration value="0"/>
-				<xs:enumeration value="120"/>
-				<xs:enumeration value="180"/>
-				<xs:enumeration value="240"/>
-				<xs:enumeration value="300"/>
-				<xs:enumeration value="360"/>
-				<xs:enumeration value="420"/>
-				<xs:enumeration value="47520"/>
-				<xs:enumeration value="480"/>
-				<xs:enumeration value="50160"/>
-				<xs:enumeration value="60"/>
-			</xs:restriction>
+			<xs:restriction base="xs:int"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="Wert" type="xs:string"/>
@@ -713,9 +618,7 @@
 	</xs:element>
 	<xs:element name="deploymentID">
 		<xs:simpleType>
-			<xs:restriction base="xs:string">
-				<xs:enumeration value="Produktion R21"/>
-			</xs:restriction>
+			<xs:restriction base="xs:string"/>
 		</xs:simpleType>
 	</xs:element>
 	<xs:element name="externeRoutennummer" type="xs:short"/>
