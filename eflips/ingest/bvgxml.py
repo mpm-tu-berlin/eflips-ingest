@@ -1,52 +1,28 @@
 #!/usr/bin/env python3
-import functools
 import glob
 import logging
 import os
-import pickle
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from itertools import chain
-from multiprocessing import Pool
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import fire  # type: ignore
 import eflips.model
 import eflips.ingest.util
 from lxml import etree
-from pyproj import Transformer
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from tqdm.auto import tqdm
 from xsdata.formats.dataclass.parsers import XmlParser
 
+from eflips.ingest.util import soldner_to_pointz
 from eflips.ingest.xmldata import (
     FahrtFahrgastrelevant,
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
-
-transformer = Transformer.from_crs(
-    "EPSG:3068", "EPSG:4326"
-)  # Maybe its faster without creating a new transformer every time
-
-
-def soldner_to_pointz(x: float, y: float) -> str:
-    """
-    Converts a Soldner coordinate to a PostGIS POINTZ string
-    :param x: the x coordinate
-    :param y: the y coordinate
-    :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
-             eflips.ingest.util module
-    """
-
-    lat, lon = transformer.transform(y / 1000, x / 1000)
-    z = eflips.ingest.util.get_altitude((lat, lon))
-
-    return f"POINTZ({lon} {lat} {z})"
-
 
 @dataclass
 class PreProcessResult:
