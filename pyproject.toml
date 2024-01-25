@@ -13,9 +13,13 @@ packages = [{ include = "eflips/ingest" }]
 include = ["LICENSE.md"]
 
 [tool.poetry.dependencies]
-python = "^3.9"
-eflips-model = "^1.0.0"
+python = "^3.10"
+eflips-model = {path = "/home/ludger/Documents/Arbeit/Software/eflips-model", develop = true}
 requests = "^2.31.0"
+fire = "^0.5.0"
+lxml = "^5.1.0"
+tqdm = "^4.66.1"
+pyproj = "^3.6.1"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.7.1"
@@ -23,6 +27,10 @@ black = "^23.11.0"
 pytest = "^7.4.3"
 pytest-pycharm = "^0.7.0"
 pre-commit = "^3.5.0"
+xsdata = {extras = ["cli", "lxml"], version = "^24.1"}
+types-requests = "^2.31.0.20240125"
+lxml-stubs = "^0.5.1"
+types-tqdm = "^4.66.0.20240106"
 
 
 [build-system]
