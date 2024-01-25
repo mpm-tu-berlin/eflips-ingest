@@ -140,14 +140,12 @@ class Linienfahrplan:
                 "required": True,
             }
         )
-        schnittstellenversion: "Linienfahrplan.Generierung.Schnittstellenversion" = (
-            field(
-                metadata={
-                    "name": "Schnittstellenversion",
-                    "type": "Element",
-                    "required": True,
-                }
-            )
+        schnittstellenversion: "Linienfahrplan.Generierung.Schnittstellenversion" = field(
+            metadata={
+                "name": "Schnittstellenversion",
+                "type": "Element",
+                "required": True,
+            }
         )
         datenversion: "Linienfahrplan.Generierung.Datenversion" = field(
             metadata={
@@ -163,14 +161,12 @@ class Linienfahrplan:
                 "required": True,
             }
         )
-        generierungs_parameter: "Linienfahrplan.Generierung.GenerierungsParameter" = (
-            field(
-                metadata={
-                    "name": "GenerierungsParameter",
-                    "type": "Element",
-                    "required": True,
-                }
-            )
+        generierungs_parameter: "Linienfahrplan.Generierung.GenerierungsParameter" = field(
+            metadata={
+                "name": "GenerierungsParameter",
+                "type": "Element",
+                "required": True,
+            }
         )
 
         @dataclass(kw_only=True)
@@ -226,14 +222,12 @@ class Linienfahrplan:
 
             @dataclass(kw_only=True)
             class Meldungsliste:
-                meldung: "Linienfahrplan.Generierung.Ergebnis.Meldungsliste.Meldung" = (
-                    field(
-                        metadata={
-                            "name": "Meldung",
-                            "type": "Element",
-                            "required": True,
-                        }
-                    )
+                meldung: "Linienfahrplan.Generierung.Ergebnis.Meldungsliste.Meldung" = field(
+                    metadata={
+                        "name": "Meldung",
+                        "type": "Element",
+                        "required": True,
+                    }
                 )
 
                 @dataclass(kw_only=True)
@@ -262,9 +256,7 @@ class Linienfahrplan:
 
         @dataclass(kw_only=True)
         class GenerierungsParameter:
-            parameter: list[
-                "Linienfahrplan.Generierung.GenerierungsParameter.Parameter"
-            ] = field(
+            parameter: list["Linienfahrplan.Generierung.GenerierungsParameter.Parameter"] = field(
                 default_factory=list,
                 metadata={
                     "name": "Parameter",
@@ -360,9 +352,7 @@ class Linienfahrplan:
 
         @dataclass(kw_only=True)
         class Netzpunkte:
-            netzpunkt: list[
-                "Linienfahrplan.StreckennetzDaten.Netzpunkte.Netzpunkt"
-            ] = field(
+            netzpunkt: list["Linienfahrplan.StreckennetzDaten.Netzpunkte.Netzpunkt"] = field(
                 default_factory=list,
                 metadata={
                     "name": "Netzpunkt",
@@ -609,9 +599,7 @@ class Linienfahrplan:
 
             @dataclass(kw_only=True)
             class RoutenDaten:
-                route: list[
-                    "Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route"
-                ] = field(
+                route: list["Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route"] = field(
                     default_factory=list,
                     metadata={
                         "name": "Route",
@@ -747,9 +735,7 @@ class Linienfahrplan:
 
                     @dataclass(kw_only=True)
                     class Punktfolge:
-                        punkt: list[
-                            "Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Punktfolge.Punkt"
-                        ] = field(
+                        punkt: list["Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Punktfolge.Punkt"] = field(
                             default_factory=list,
                             metadata={
                                 "name": "Punkt",
@@ -864,9 +850,7 @@ class Linienfahrplan:
 
             @dataclass(kw_only=True)
             class Routenvarianten:
-                routenvariante: list[
-                    "Linienfahrplan.LinienDaten.Linie.Routenvarianten.Routenvariante"
-                ] = field(
+                routenvariante: list["Linienfahrplan.LinienDaten.Linie.Routenvarianten.Routenvariante"] = field(
                     default_factory=list,
                     metadata={
                         "name": "Routenvariante",
@@ -1060,9 +1044,7 @@ class Linienfahrplan:
 
     @dataclass(kw_only=True)
     class FahrzeugumlaufDaten:
-        fahrzeugumlauf: list[
-            "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf"
-        ] = field(
+        fahrzeugumlauf: list["Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf"] = field(
             default_factory=list,
             metadata={
                 "name": "Fahrzeugumlauf",
@@ -1094,21 +1076,17 @@ class Linienfahrplan:
                     "required": True,
                 }
             )
-            umlaeufe: "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe" = (
-                field(
-                    metadata={
-                        "name": "Umlaeufe",
-                        "type": "Element",
-                        "required": True,
-                    }
-                )
+            umlaeufe: "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe" = field(
+                metadata={
+                    "name": "Umlaeufe",
+                    "type": "Element",
+                    "required": True,
+                }
             )
 
             @dataclass(kw_only=True)
             class Umlaeufe:
-                umlauf: list[
-                    "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe.Umlauf"
-                ] = field(
+                umlauf: list["Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe.Umlauf"] = field(
                     default_factory=list,
                     metadata={
                         "name": "Umlauf",
@@ -1154,12 +1132,14 @@ class Linienfahrplan:
                             "required": True,
                         }
                     )
-                    gueltigkeiten: "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe.Umlauf.Gueltigkeiten" = field(
-                        metadata={
-                            "name": "Gueltigkeiten",
-                            "type": "Element",
-                            "required": True,
-                        }
+                    gueltigkeiten: "Linienfahrplan.FahrzeugumlaufDaten.Fahrzeugumlauf.Umlaeufe.Umlauf.Gueltigkeiten" = (
+                        field(
+                            metadata={
+                                "name": "Gueltigkeiten",
+                                "type": "Element",
+                                "required": True,
+                            }
+                        )
                     )
 
                     @dataclass(kw_only=True)

@@ -52,7 +52,7 @@ def get_altitude_google(latlon: Tuple[Number, Number]) -> Number:
     if data["status"] != "OK":
         raise ValueError("No elevation found")
     assert isinstance(data["results"][0]["elevation"], Number)
-    return float(data["results"][0]["elevation"])
+    return data["results"][0]["elevation"]
 
 
 def get_altitude(latlon: Tuple[Number, Number]) -> Number:
@@ -65,7 +65,7 @@ def get_altitude(latlon: Tuple[Number, Number]) -> Number:
         return get_altitude_google(latlon)
 
 
-def soldner_to_pointz(x: Number, y: Number) -> str:
+def soldner_to_pointz(x: float, y: float) -> str:
     """
     Converts a Soldner coordinate to a PostGIS POINTZ string, also setting the altitude using API lookups
 
@@ -74,7 +74,6 @@ def soldner_to_pointz(x: Number, y: Number) -> str:
     :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
              eflips.ingest.util module
     """
-
     lat, lon = transformer.transform(y / 1000, x / 1000)
     z = eflips.ingest.util.get_altitude((lat, lon))
 
