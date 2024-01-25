@@ -14,7 +14,7 @@ include = ["LICENSE.md"]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-eflips-model = {path = "/home/ludger/Documents/Arbeit/Software/eflips-model", develop = true}
+eflips-model = "^1.1.2"
 requests = "^2.31.0"
 fire = "^0.5.0"
 lxml = "^5.1.0"
