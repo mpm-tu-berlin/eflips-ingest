@@ -5,6 +5,7 @@ from typing import Tuple
 import requests
 
 
+@lru_cache(maxsize=4096)
 def get_altitude_openelevation(latlon: Tuple[float, float]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
@@ -14,14 +15,14 @@ def get_altitude_openelevation(latlon: Tuple[float, float]) -> float:
     # with an error message
     if not os.getenv("OPENELEVATION_URL"):
         raise ValueError("OPENELEVATION_URL not set")
-    url = f"{os.getenv('OPENELEVATION_URL')}/lookup?locations={latlon[0]},{latlon[1]}"
+    url = f"{os.getenv('OPENELEVATION_URL')}/api/v1/lookup?locations={latlon[0]},{latlon[1]}"
 
     # We use the requests library to get the data
     response = requests.get(url)
     response.raise_for_status()
     data = response.json()
     if "elevation" in data["results"][0]:
-        return data["results"][0]["elevation"]
+        return float(data["results"][0]["elevation"])
     else:
         raise ValueError("No elevation found")
 
@@ -42,7 +43,7 @@ def get_altitude_google(latlon: Tuple[float, float]) -> float:
     data = response.json()
     if data["status"] != "OK":
         raise ValueError("No elevation found")
-    return data["results"][0]["elevation"]
+    return float(data["results"][0]["elevation"])
 
 
 def get_altitude(latlon: Tuple[float, float]) -> float:
