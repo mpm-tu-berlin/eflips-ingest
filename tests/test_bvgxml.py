@@ -1,20 +1,22 @@
 import glob
 import os
-from datetime import date
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 
-import pytest
 import eflips.model
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.bvgxml import (
-    import_line,
     load_and_validate_xml,
     create_stations,
     setup_working_dictionaries,
     create_routes_and_time_profiles,
+    create_trip_prototypes,
+    TimeProfile,
+    create_trips_and_vehicle_schedules,
+    recenter_station,
 )
 from eflips.ingest.xmldata import Linienfahrplan
 
@@ -112,6 +114,54 @@ class TestBVGXML:
                     assert assoc.station is not None
                     assert assoc.location is not None
 
+    def test_create_trip_prototypes(self, linienfahrplan):
+        engine = create_engine(os.environ["DATABASE_URL"])
+        eflips.model.Base.metadata.drop_all(engine)
+        eflips.model.Base.metadata.create_all(engine)
+
+        with Session(engine) as session:
+            scenario = eflips.model.Scenario(
+                name="Test Scenario",
+            )
+            session.add(scenario)
+            session.flush()
+            scenario_id = scenario.id
+
+            create_stations(linienfahrplan, scenario_id, session)
+            trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
+                linienfahrplan, scenario_id, session
+            )
+            trips_by_id: Dict[int, TimeProfile] = create_trip_prototypes(
+                linienfahrplan, trip_time_profiles, db_routes_by_lfd_nr
+            )
+            assert len(trips_by_id) > 0
+            for trip in trips_by_id.values():
+                assert trip.route in db_routes_by_lfd_nr.values()
+                assert len(trip.time_profile_points) > 0
+                assert len(trip.time_profile_points) == len(trip.route.assoc_route_stations)
+
+    def test_create_trips_and_vehicle_schedules(self, linienfahrplan):
+        engine = create_engine(os.environ["DATABASE_URL"])
+        eflips.model.Base.metadata.drop_all(engine)
+        eflips.model.Base.metadata.create_all(engine)
+
+        with Session(engine) as session:
+            scenario = eflips.model.Scenario(
+                name="Test Scenario",
+            )
+            session.add(scenario)
+            session.flush()
+            scenario_id = scenario.id
+
+            create_stations(linienfahrplan, scenario_id, session)
+            trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
+                linienfahrplan, scenario_id, session
+            )
+            trips_by_id: Dict[int, TimeProfile] = create_trip_prototypes(
+                linienfahrplan, trip_time_profiles, db_routes_by_lfd_nr
+            )
+            create_trips_and_vehicle_schedules(linienfahrplan, trips_by_id, scenario_id, session)
+
     def test_create_working_data(self, linienfahrplan):
         grid_points, segments, route_datas, route_lfd_nrs = setup_working_dictionaries(linienfahrplan)
 
@@ -142,21 +192,7 @@ class TestBVGXML:
                 Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
             )
 
-    @pytest.mark.skipif(
-        not os.getenv("DATABASE_URL"),
-        reason="DATABASE_URL not set",
-    )
-    @pytest.mark.skip
-    def test_import_line(self, xml_path):
-        data = load_and_validate_xml(xml_path)
-        preprocess_result = preprocess_bvgxml(data)
-
-        assert len(preprocess_result.dates) == 1
-
-        # Assemble an input dict for the import function
-        date = preprocess_result.dates.pop()
-        input_dict = {date: data}
-
+    def test_recenter_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
         eflips.model.Base.metadata.create_all(engine)
@@ -166,42 +202,17 @@ class TestBVGXML:
                 name="Test Scenario",
             )
             session.add(scenario)
-            session.commit()
+            session.flush()
             scenario_id = scenario.id
 
-        # Import the data
-        import_line(scenario_id, input_dict, os.environ["DATABASE_URL"])
+            create_stations(linienfahrplan, scenario_id, session)
+            create_routes_and_time_profiles(linienfahrplan, scenario_id, session)
+            session.flush()
 
-    @pytest.mark.skipif(
-        not os.getenv("DATABASE_URL"),
-        reason="DATABASE_URL not set",
-    )
-    @pytest.mark.skip
-    def test_impoort_line(self):
-        engine = create_engine(os.environ["DATABASE_URL"])
-        eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+            # Load a station with as
+            stat = session.query(eflips.model.Station).join(eflips.model.AssocRouteStation).first()
+            recenter_station(stat, session)
 
-        with Session(engine) as session:
-            scenario = eflips.model.Scenario(
-                name="Test Scenario",
-            )
-            session.add(scenario)
-            session.commit()
-            scenario_id = scenario.id
-
-        # TODO: Remove this. it is just for testing
-        for path in glob.glob("/home/ludger/Downloads/passengerCount_BO_2023-07-03/*.xml"):
-            print(path)
-            xml_path = Path(path)
-            data = load_and_validate_xml(xml_path)
-            preprocess_result = preprocess_bvgxml(data)
-
-            # assert len(preprocess_result.dates) == 1
-
-            # Assemble an input dict for the import function
-            date = preprocess_result.dates.pop()
-            input_dict = {date: data}
-
-            # Import the data
-            import_line(scenario_id, input_dict, os.environ["DATABASE_URL"])
+            assert stat.geom is not None
+            assert stat.geom != f"POINTZ(0 0 0)"
+            session.flush()

@@ -259,13 +259,13 @@ tomli = ["tomli (>=2.0.0,<3.0.0)"]
 
 [[package]]
 name = "eflips-model"
-version = "1.1.2"
+version = "1.1.3"
 description = "A common data model for the eflips family of electric vehicle simulation & optimization tools."
 optional = false
 python-versions = ">=3.9,<4.0"
 files = [
-    {file = "eflips_model-1.1.2-py3-none-any.whl", hash = "sha256:27964930e4aa245a7f966a12f3878afc5a5e43cb1ca63d7a31e249db7faa053c"},
-    {file = "eflips_model-1.1.2.tar.gz", hash = "sha256:6c90be72ce4fd077efa9a9eb58dde1cdf93b820321393fa3a492afe168e0ca65"},
+    {file = "eflips_model-1.1.3-py3-none-any.whl", hash = "sha256:88a1a599174eb29c05ea94b830ba9b74e4a41f3865829c79706895c4ecdcf7fd"},
+    {file = "eflips_model-1.1.3.tar.gz", hash = "sha256:4b44c315e3b84efb23b77a6de624850690f3739c5e15c261c1eeba0355befc59"},
 ]
 
 [package.dependencies]
@@ -569,13 +569,13 @@ test = ["coverage[toml] (>=7.2.5)", "mypy (>=1.2.0)", "pytest (>=7.3.0)", "pytes
 
 [[package]]
 name = "mako"
-version = "1.3.1"
+version = "1.3.0"
 description = "A super-fast templating language that borrows the best ideas from the existing templating languages."
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "Mako-1.3.1-py3-none-any.whl", hash = "sha256:463f03e04559689adaee25e0967778d6ad41285ed607dc1e7df0dd4e4df81f9e"},
-    {file = "Mako-1.3.1.tar.gz", hash = "sha256:baee30b9c61718e093130298e678abed0dbfa1b411fcc4c1ab4df87cd631a0f2"},
+    {file = "Mako-1.3.0-py3-none-any.whl", hash = "sha256:57d4e997349f1a92035aa25c17ace371a4213f2ca42f99bee9a602500cfd54d9"},
+    {file = "Mako-1.3.0.tar.gz", hash = "sha256:e3a9d388fd00e87043edbe8792f45880ac0114e9c4adc69f6e9bfb2c55e3b11b"},
 ]
 
 [package.dependencies]
@@ -1343,4 +1343,4 @@ test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "a9a68df9534ce3fe03782dde7189b13e49a47b70e9505906cb5b0269b0b85f8b"
+content-hash = "6d74514057b04bc2ead9e8d3fb58a91393d684097bc2fdfa5963503f0611ade7"
