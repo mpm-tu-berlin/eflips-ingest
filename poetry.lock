@@ -259,13 +259,13 @@ tomli = ["tomli (>=2.0.0,<3.0.0)"]
 
 [[package]]
 name = "eflips-model"
-version = "1.1.3"
+version = "1.1.4"
 description = "A common data model for the eflips family of electric vehicle simulation & optimization tools."
 optional = false
 python-versions = ">=3.9,<4.0"
 files = [
-    {file = "eflips_model-1.1.3-py3-none-any.whl", hash = "sha256:88a1a599174eb29c05ea94b830ba9b74e4a41f3865829c79706895c4ecdcf7fd"},
-    {file = "eflips_model-1.1.3.tar.gz", hash = "sha256:4b44c315e3b84efb23b77a6de624850690f3739c5e15c261c1eeba0355befc59"},
+    {file = "eflips_model-1.1.4-py3-none-any.whl", hash = "sha256:8c94c8fa3dd9c9ac51ee5962317adad3acc77ea30169dbdbb415df30a9f8f23d"},
+    {file = "eflips_model-1.1.4.tar.gz", hash = "sha256:a45b98ff6f8b2e5f5942993f9b7edaebbfb5bce810c35878ee5dbc7b77734d5e"},
 ]
 
 [package.dependencies]
@@ -1343,4 +1343,4 @@ test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "6d74514057b04bc2ead9e8d3fb58a91393d684097bc2fdfa5963503f0611ade7"
+content-hash = "3c4b748df23d02b834f2b19d760c6e0624f593cd07ac032ba084b061e2f4efba"
