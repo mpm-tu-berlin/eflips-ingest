@@ -13,7 +13,7 @@ transformer = Transformer.from_crs("EPSG:3068", "EPSG:4326")
 
 
 @lru_cache(maxsize=4096)
-def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> Number:
+def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
@@ -29,7 +29,7 @@ def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> Number:
     response.raise_for_status()
     data = response.json()
     if "elevation" in data["results"][0]:
-        assert isinstance(data["results"][0]["elevation"], Number)
+        assert isinstance(data["results"][0]["elevation"], float) or isinstance(data["results"][0]["elevation"], int)
         return data["results"][0]["elevation"]
     else:
         raise ValueError("No elevation found")
@@ -37,7 +37,7 @@ def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> Number:
 
 # Since this is paid API we at least try to cache the results
 @lru_cache(maxsize=4096)
-def get_altitude_google(latlon: Tuple[Number, Number]) -> Number:
+def get_altitude_google(latlon: Tuple[Number, Number]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
@@ -51,14 +51,18 @@ def get_altitude_google(latlon: Tuple[Number, Number]) -> Number:
     data = response.json()
     if data["status"] != "OK":
         raise ValueError("No elevation found")
-    assert isinstance(data["results"][0]["elevation"], Number)
+    assert isinstance(data["results"][0]["elevation"], float) or isinstance(data["results"][0]["elevation"], int)
     return data["results"][0]["elevation"]
 
 
-def get_altitude(latlon: Tuple[Number, Number]) -> Number:
+def get_altitude(latlon: Tuple[Number, Number]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
+    if "ELEVATION_DUMMY_MODE" in os.environ:
+        if os.environ["ELEVATION_DUMMY_MODE"] == "True":
+            return 9999.0
+
     try:
         return get_altitude_openelevation(latlon)
     except ValueError:
@@ -74,7 +78,6 @@ def soldner_to_pointz(x: float, y: float) -> str:
     :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
              eflips.ingest.util module
     """
-
     lat, lon = transformer.transform(y / 1000, x / 1000)
     z = eflips.ingest.util.get_altitude((lat, lon))
 
