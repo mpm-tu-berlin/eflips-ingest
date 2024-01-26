@@ -74,6 +74,7 @@ def soldner_to_pointz(x: float, y: float) -> str:
     :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
              eflips.ingest.util module
     """
+
     lat, lon = transformer.transform(y / 1000, x / 1000)
     z = eflips.ingest.util.get_altitude((lat, lon))
 
