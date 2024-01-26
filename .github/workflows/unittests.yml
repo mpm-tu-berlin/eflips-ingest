@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        PYTHON_VERSION: [ "3.9", "3.10", "3.11", "3.12" ]
+        PYTHON_VERSION: [ "3.10", "3.11", "3.12" ]
     services:
       postgres:
         image: postgis/postgis
@@ -56,6 +56,8 @@ jobs:
           POSTGRES_HOST: localhost
           # The default PostgreSQL port
           POSTGRES_PORT: 5432
+          ELEVATION_DUMMY_MODE: "True"
+
 
           PYTHONPATH: ${{ github.workspace }}
 
