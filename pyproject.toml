@@ -31,6 +31,7 @@ xsdata = {extras = ["cli", "lxml"], version = "^24.1"}
 types-requests = "^2.31.0.20240125"
 lxml-stubs = "^0.5.1"
 types-tqdm = "^4.66.0.20240106"
+types-psycopg2 = "^2.9.21.20240118"
 
 [tool.black]
 line-length = 120

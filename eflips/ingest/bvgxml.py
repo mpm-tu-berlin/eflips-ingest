@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple, Union
 
 import eflips.model
 import fire  # type: ignore
+import psycopg2
 from eflips.model import ConsistencyWarning
 from geoalchemy2 import WKBElement
 from geoalchemy2.shape import to_shape
@@ -958,6 +959,53 @@ def recenter_station(station: eflips.model.Station, session: Session) -> None:
     station.geom = new_location  # type: ignore
 
 
+def fix_max_sequence(database_url: str) -> None:
+    """
+    Run some SQL in order to set the nextval() sequence to the maximum value of the id column for each table.
+    :param database_url: The database URL to use
+    :return: None
+    """
+    SEQUENCES = [
+        "Scenario_id_seq",
+        "Plan_id_seq",
+        "Process_id_seq",
+        "BatteryType_id_seq",
+        "VehicleClass_id_seq",
+        "Line_id_seq",
+        "Station_id_seq",
+        "Depot_id_seq",
+        "AssocPlanProcess_id_seq",
+        "VehicleType_id_seq",
+        "Route_id_seq",
+        "Area_id_seq",
+        "Vehicle_id_seq",
+        "AssocVehicleTypeVehicleClass_id_seq",
+        "AssocRouteStation_id_seq",
+        "AssocAreaProcess_id_seq",
+        "Rotation_id_seq",
+        "Trip_id_seq",
+        "Event_id_seq",
+        "StopTime_id_seq",
+    ]
+    conn = psycopg2.connect(database_url)
+    conn.autocommit = True
+    for sequence in SEQUENCES:
+        table_name = sequence.split("_")[0]
+        key_name = sequence.split("_")[1]
+        with conn.cursor() as cur:
+            cur.execute(f'SELECT MAX("{key_name}") FROM "{table_name}"')
+            res = cur.fetchone()
+            max_id = res[0] if res is not None else None
+            if max_id is not None:
+                cur.execute(f'ALTER SEQUENCE "{sequence}" RESTART WITH {max_id + 1}')
+                cur.execute(f'SELECT NEXTVAL(\'"public"."{sequence}"\')')
+                res = cur.fetchone()
+                new_max_id = res[0] if res is not None else None
+                if new_max_id <= max_id:
+                    raise ValueError(f"Sequence {sequence} did not restart properly. It is still at {new_max_id}")
+    conn.close()
+
+
 def ingest_bvgxml(
     paths: Union[str, List[str]],
     database_url: str,
@@ -1087,6 +1135,9 @@ def ingest_bvgxml(
         recenter_station(station, session)
 
     session.commit()
+
+    # Fix the max sequence numbers
+    fix_max_sequence(database_url)
 
     # TODO: Merge schedules - Maybe not necessary
     # TODO: Duplicate trips offset by one week
