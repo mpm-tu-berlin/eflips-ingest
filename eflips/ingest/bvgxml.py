@@ -579,7 +579,7 @@ def create_routes_and_time_profiles(
             # Some routes have a distance of zero even once the last point is reached
             if i == len(route.punktfolge.punkt) - 1 and elapsed_distance == 0:
                 # We mark these by putting an obscenely large number in the distance
-                logger.info(f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end.")
+                logger.warning(f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end.")
                 elapsed_distance += 1e6 * 1000  # One million kilometers
 
             # Some time profiles have a zero time at the end
