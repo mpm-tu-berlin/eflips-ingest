@@ -935,7 +935,7 @@ def recenter_station(station: eflips.model.Station, session: Session) -> None:
     xs, ys, zs = [], [], []
     for assoc in station.assoc_route_stations:
         if isinstance(assoc.location, str):
-            loc_str = assoc.location.lstrip("POINTZ(").rstrip(")")
+            loc_str = assoc.location.lstrip("SRID=4326;POINTZ(").rstrip(")")
             x, y, z = loc_str.split(" ")
             x_f, y_f, z_f = float(x), float(y), float(z)
             xs.append(x_f)
