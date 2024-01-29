@@ -95,7 +95,7 @@ if __name__ == "__main__":
                 station_short_name = session.query(Station).filter(Station.id == stations[0]).one().name_short
 
                 scenario = session.query(Scenario).filter(Scenario.id == 1).one()
-                new_scenario = scenario  # TODO make clone
+                new_scenario = scenario.clone(session)
                 new_scenario.name = f"All Rotations starting and ending at {station_name}"
 
                 # Find this station in the new scenario
