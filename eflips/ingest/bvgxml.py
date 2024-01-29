@@ -17,9 +17,10 @@ import fire  # type: ignore
 import psycopg2
 from eflips.model import ConsistencyWarning
 from geoalchemy2 import WKBElement
+from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape
 from lxml import etree
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 from xsdata.formats.dataclass.parsers import XmlParser
@@ -1047,7 +1048,7 @@ def ingest_bvgxml(
             paths = [paths]
     paths_pathlike = [Path(p) for p in paths]
 
-    TOTAL_STEPS = 6
+    TOTAL_STEPS = 8
 
     ### STEP 1: Load the XML files into memory
     # First, we go through all the files and load them into memory
@@ -1129,14 +1130,41 @@ def ingest_bvgxml(
         .distinct(eflips.model.Station.id)
     )
     for station in tqdm(
-        stations_without_geom_q, desc=f"(6/{TOTAL_STEPS}) Setting station geom", total=stations_without_geom_q.count()
+        stations_without_geom_q,
+        desc=f"(6/{TOTAL_STEPS}) Setting station geom",
+        total=stations_without_geom_q.count(),
     ):
         # Get the median of the assoc_route_stations
         recenter_station(station, session)
 
+    ### STEP 7: Fix the routes with very large distances:
+    # There are some routes which have a distance of zero even once the last point is reached
+    # We set their distance to a very large number. Now we set it to the geometric distance between the first and last
+    # point
+    long_route_q = (
+        session.query(eflips.model.Route)
+        .filter(eflips.model.Route.scenario_id == scenario_id)
+        .filter(eflips.model.Route.distance >= 1e6 * 1000)
+    )
+    for route in tqdm(long_route_q, desc=f"(7/{TOTAL_STEPS}) Fixing long routes", total=long_route_q.count()):
+        first_point = route.departure_station.geom
+        last_point = route.arrival_station.geom
+
+        first_point_soldner = func.ST_Transform(first_point, 3068)
+        last_point_soldner = func.ST_Transform(last_point, 3068)
+        dist_q = ST_Distance(first_point_soldner, last_point_soldner)
+
+        dist = session.query(dist_q).one()[0]
+
+        with session.no_autoflush:
+            route.distance = dist
+            route.assoc_route_stations[-1].elapsed_distance = dist
+        route.name = "CHECK DISTANCE: " + route.name
+
     session.commit()
 
-    # Fix the max sequence numbers
+    # STEP 8: Fix the max sequence numbers
+    print(f"(8/{TOTAL_STEPS}) Fixing max sequence numbers")
     fix_max_sequence(database_url)
 
     # TODO: Merge schedules - Maybe not necessary
