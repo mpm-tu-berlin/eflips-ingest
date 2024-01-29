@@ -81,4 +81,4 @@ def soldner_to_pointz(x: float, y: float) -> str:
     lat, lon = transformer.transform(y / 1000, x / 1000)
     z = eflips.ingest.util.get_altitude((lat, lon))
 
-    return f"POINTZ({lon} {lat} {z})"
+    return f"SRID=4326;POINTZ({lon} {lat} {z})"

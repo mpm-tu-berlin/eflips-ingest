@@ -98,7 +98,7 @@ def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, se
             name=name,
             name_short=name_short,
             is_electrified=False,
-            geom="POINT(0 0 0)",  # Will be set later
+            geom="SRID=4326;POINTZ(0 0 0)",  # Will be set later
         )
         session.add(station)
     return station
@@ -954,7 +954,7 @@ def recenter_station(station: eflips.model.Station, session: Session) -> None:
     median_z = statistics.median(zs)
 
     # Create a new location from the median
-    new_location = f"POINTZ({median_x} {median_y} {median_z})"
+    new_location = f"SRID=4326;POINTZ({median_x} {median_y} {median_z})"
 
     # Update the station
     station.geom = new_location  # type: ignore
