@@ -1070,7 +1070,7 @@ def ingest_bvgxml(
     engine = create_engine(database_url)
     if clear_database:
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
     session = Session(engine)
     scenario = eflips.model.Scenario(
         name=f"Created by BVG-XML Ingestion on {socket.gethostname()} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"

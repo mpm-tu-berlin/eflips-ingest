@@ -47,4 +47,4 @@ class TestGeography:
     )
     def test_soldner_to_pointz(self):
         wkt_str = soldner_to_pointz(16522000, 29765400)
-        assert wkt_str == "POINTZ(13.278952671184285 52.59436500848307 34)"
+        assert wkt_str == "SRID=4326;POINTZ(13.278952671184285 52.59436500848307 34)"

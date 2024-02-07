@@ -66,7 +66,7 @@ class TestBVGXML:
     def test_create_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
 
         with Session(engine) as session:
             scenario = eflips.model.Scenario(
@@ -89,7 +89,7 @@ class TestBVGXML:
     def test_create_routes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
 
         with Session(engine) as session:
             scenario = eflips.model.Scenario(
@@ -117,7 +117,7 @@ class TestBVGXML:
     def test_create_trip_prototypes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
 
         with Session(engine) as session:
             scenario = eflips.model.Scenario(
@@ -143,7 +143,7 @@ class TestBVGXML:
     def test_create_trips_and_vehicle_schedules(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
 
         with Session(engine) as session:
             scenario = eflips.model.Scenario(
@@ -195,7 +195,7 @@ class TestBVGXML:
     def test_recenter_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.Base.metadata.create_all(engine)
+        eflips.model.setup_database(engine)
 
         with Session(engine) as session:
             scenario = eflips.model.Scenario(
