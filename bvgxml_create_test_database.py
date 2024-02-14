@@ -128,6 +128,7 @@ if __name__ == "__main__":
 
                 scenario = session.query(Scenario).filter(Scenario.id == 1).one()
                 new_scenario = scenario.clone(session)
+                session.expunge_all()  # With the new cloning code, this will not be necessary, but for now it is
                 new_scenario.name = f"All Rotations starting and ending at {station_name}"
 
                 # Find this station in the new scenario
