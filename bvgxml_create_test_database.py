@@ -59,20 +59,52 @@ def prune_scenario(station: Station, scenario_id: int, session: Session) -> None
     """
     Creates a scenario with all the rotations starting and ending at the given station
     """
-    # Find all the rotations *not* starting and ending at this station
-    rotations = session.query(Rotation).filter(Rotation.scenario_id == scenario_id).all()
-    for rotation in tqdm(rotations):
-        if (
-            rotation.trips[0].route.departure_station_id == station.id
-            and rotation.trips[-1].route.arrival_station_id == station.id
-        ):
-            continue
+    # Sum up all the objects that will be pruned
+    total_count = session.query(Rotation).filter(Rotation.scenario_id == scenario_id).count()
+    total_count += session.query(Route).filter(Route.scenario_id == scenario_id).count()
+    total_count += session.query(Line).filter(Line.scenario_id == scenario_id).count()
+    total_count += session.query(Station).filter(Station.scenario_id == scenario_id).count()
 
-        for trip in rotation.trips:
-            for stop_time in trip.stop_times:
-                session.delete(stop_time)
-            session.delete(trip)
-        session.delete(rotation)
+    # Create a global progress bar
+    with tqdm(total=total_count) as pbar:
+        # Find all the rotations *not* starting and ending at this station
+        rotations = session.query(Rotation).filter(Rotation.scenario_id == scenario_id).all()
+        for rotation in rotations:
+            pbar.update(1)
+            if (
+                rotation.trips[0].route.departure_station_id == station.id
+                and rotation.trips[-1].route.arrival_station_id == station.id
+            ):
+                continue
+
+            for trip in rotation.trips:
+                for stop_time in trip.stop_times:
+                    session.delete(stop_time)
+                session.delete(trip)
+            session.delete(rotation)
+
+        # Find all the routes that now have no trips
+        routes = session.query(Route).filter(Route.scenario_id == scenario_id).all()
+        for route in routes:
+            if len(route.trips) == 0:
+                for assoc in route.assoc_route_stations:
+                    session.delete(assoc)
+                session.delete(route)
+            pbar.update(1)
+
+        # Find all the lines that now have no routes
+        lines = session.query(Line).filter(Line.scenario_id == scenario_id).all()
+        for line in lines:
+            if len(line.routes) == 0:
+                session.delete(line)
+            pbar.update(1)
+
+        # Find all the stations that now have no routes
+        stations = session.query(Station).filter(Station.scenario_id == scenario_id).all()
+        for station in stations:
+            if len(station.assoc_route_stations) == 0:
+                session.delete(station)
+            pbar.update(1)
 
 
 if __name__ == "__main__":
