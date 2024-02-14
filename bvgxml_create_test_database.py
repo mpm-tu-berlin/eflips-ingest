@@ -1,4 +1,5 @@
 #! /usr/bin/env python3
+import os
 from multiprocessing import Pool
 from typing import Dict, Tuple
 
@@ -7,7 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 
-DATABASE_URL = "postgresql://ludger:@/bvg_schedule_all?host=/var/run/postgresql"
+if "DATABASE_URL" not in os.environ:
+    raise Exception("DATABASE_URL not set")
+DATABASE_URL = os.environ["DATABASE_URL"]
 engine = create_engine(DATABASE_URL, echo=False)
 
 
