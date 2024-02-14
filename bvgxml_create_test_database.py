@@ -119,7 +119,11 @@ def prune_scenario(station: Station, scenario_id: int, session: Session) -> None
         stations = session.query(Station).filter(Station.scenario_id == scenario_id).all()
         for station in stations:
             if len(station.assoc_route_stations) == 0:
-                dropped_station_ids.append(station.id)
+                # We also need to check that this station is not the departure or arrival station of any trip
+                if (session.query(Route).filter(Route.departure_station_id == station.id).count() == 0) and (
+                    session.query(Route).filter(Route.arrival_station_id == station.id).count() == 0
+                ):
+                    dropped_station_ids.append(station.id)
             pbar.update(1)
         dropped_station_q = session.query(Station).filter(Station.id.in_(dropped_station_ids))
         dropped_stations = dropped_station_q.delete()
@@ -159,6 +163,7 @@ if __name__ == "__main__":
                 )
 
                 prune_scenario(station, new_scenario.id, session)
+                raise Exception("Not implemented")
             except Exception as e:
                 session.rollback()
                 raise e
