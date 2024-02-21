@@ -4,17 +4,20 @@ from datetime import datetime
 import pandas as pd
 
 def parse_datatypes(datatype_str):
-    dtype_map = {
-        'num': 'float',  # oder 'int' falls keine Nachkommastellen benötigt werden
-        'char': 'object'
-    }
+    #dtype_map = {
+    #    'num': 'float',  # oder 'int' falls keine Nachkommastellen benötigt werden
+    #    'char': 'object'
+    #}
+
+    # Haut uns 'num' oder 'char' für jede spalte raus
+
     dtypes = []
     for part in datatype_str:
         part = part.lstrip() # remove leading spaces
         type_info, size_info = part.split('[')
         size = size_info[:-1]  # Entferne die schließende Klammer
-        dtype = dtype_map[type_info]
-        dtypes.append(dtype)
+        #dtype = dtype_map[type_info]
+        dtypes.append(type_info)#dtype)
     return dtypes
 def import_vdv451_file(file_path):
     encoding = 'ISO-8859-1'
@@ -45,22 +48,17 @@ def import_vdv451_file(file_path):
             elif command == 'rec':
                 # Datenzeilen verarbeiten
                 row_data = parts[1:]
-                processed_row = []
 
-                for data in row_data:
-                    # Versuche, Datum und Zeit zu parsen
-                    if '.' in data:  # Datum
-                        processed_data = datetime.strptime(data, date_format).strftime('%Y-%m-%d')
-                    elif ':' in data:  # Zeit
-                        processed_data = datetime.strptime(data, time_format).strftime('%H:%M:%S')
-                    else:
-                        processed_data = data
-                    processed_row.append(processed_data)
-
-                e_data.append(processed_row)
+                e_data.append(row_data)
 
     # Parsen des Strings und Erstellen des dtype-Objekts
-    dtype_obj = parse_datatypes(formats)
+    datatypes = parse_datatypes(formats)
+
+    # Zahlen müssen zu integern gewandelt werden
+    for row in range(0,len(e_data)):
+        for col in range(0, len(e_data[row])):
+            if datatypes[col] == 'num':
+                e_data[row][col] = int(e_data[row][col])
 
     # Erstelle ein DataFrame, wenn Spalten und Daten vorhanden sind
     df = pd.DataFrame(e_data, columns=columns) if columns and e_data else pd.DataFrame()
@@ -68,10 +66,10 @@ def import_vdv451_file(file_path):
 
 
 # Pfad zur Beispiel-Datei
-file_path_example = 'rec_umlauf.x10'
+file_path_example = 'firmenkalender.x10'
 
 # Importiere die Datei und erstelle das DataFrame
 df_imported = import_vdv451_file(file_path_example)
 
 # Zeige die ersten Zeilen des DataFrame
-df_imported.head()
+print(df_imported.head())
