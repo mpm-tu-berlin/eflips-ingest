@@ -48,7 +48,7 @@ The code is organized into various Python files under the `eflips/ingest` folder
 
 ### API
 
-To include the code in your own project, please review the source code of the ingest scripts and use the functions provided there. The API is not yet stable and may change without notice.
+Please check the (currently WIP) [API Documentation](API.md) for more information.
 
 ## Testing
 
