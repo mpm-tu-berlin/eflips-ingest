@@ -1,7 +1,17 @@
 # Anpassung des Skripts zur Berücksichtigung der spezifischen Anforderungen:
+import csv
+import glob
+import os
 from datetime import datetime
 
 import pandas as pd
+from dataclasses import dataclass
+
+@dataclass
+class ParsedTable:
+    """Class for keeping track of xyz."""
+    table_name: str
+    df: pd.DataFrame
 
 def parse_datatypes(datatype_str):
     #dtype_map = {
@@ -16,8 +26,17 @@ def parse_datatypes(datatype_str):
         part = part.lstrip() # remove leading spaces
         type_info, size_info = part.split('[')
         size = size_info[:-1]  # Entferne die schließende Klammer
+        if type_info == 'num':
+            vorkomma, nachkomma = size.split('.')
+            if nachkomma == '0':
+                dtypes.append('int')
+            else:
+                dtypes.append('float')
+        else:
+            dtypes.append('string')
+
         #dtype = dtype_map[type_info]
-        dtypes.append(type_info)#dtype)
+        #dtypes.append(type_info)#dtype)
     return dtypes
 def import_vdv451_file(file_path):
     encoding = 'ISO-8859-1'
@@ -26,24 +45,39 @@ def import_vdv451_file(file_path):
     formats = []
 
     e_data = []
+    table_name = ""
+
 
     with open(file_path, 'r', encoding=encoding) as f:
         for line in f:
-            parts = line.strip().split(';')
+            #parts = line.strip().split(';')
+            if line.strip().split(';')[0] in ('atr', 'frm', 'rec', 'mod'):
+                parts_csvrdr = csv.reader([line], delimiter=";", skipinitialspace=True)
+                parts = list(parts_csvrdr)[0]
+
+            else:
+                parts = line.strip().split(';')
+
             command = parts[0]
+
 
             if command == 'mod':
                 # Extrahiere das Datum- und Zeitformat
                 date_format = parts[1]
                 time_format = parts[2]
 
+            elif command == 'tbl':
+                table_name = parts[1].upper()
+
             elif command == 'atr':
                 # Spaltennamen definieren
-                columns = parts[1:]
+                cx = parts[1:]
+                columns = [x.upper() for x in cx]
 
             elif command == 'frm':
                 # Spalten-Datenformate definieren
                 formats = parts[1:]
+
 
             elif command == 'rec':
                 # Datenzeilen verarbeiten
@@ -55,21 +89,38 @@ def import_vdv451_file(file_path):
     datatypes = parse_datatypes(formats)
 
     # Zahlen müssen zu integern gewandelt werden
+    # gleichzeitig alles was leer ist bei string mal zu "None" machen
     for row in range(0,len(e_data)):
         for col in range(0, len(e_data[row])):
-            if datatypes[col] == 'num':
+            if e_data[row][col].strip() == "":
+                # NULL Eintrag (Auch bei Zahlen möglich - deshalb VOR der Int conversion zu nachen!)
+                e_data[row][col] = None
+
+            elif datatypes[col] == 'int':
                 e_data[row][col] = int(e_data[row][col])
+            elif datatypes[col] == 'float':
+                e_data[row][col] = float(e_data[row][col])
+
 
     # Erstelle ein DataFrame, wenn Spalten und Daten vorhanden sind
     df = pd.DataFrame(e_data, columns=columns) if columns and e_data else pd.DataFrame()
-    return df
+
+    return ParsedTable(df=df, table_name=table_name)
 
 
-# Pfad zur Beispiel-Datei
-file_path_example = 'firmenkalender.x10'
 
-# Importiere die Datei und erstelle das DataFrame
-df_imported = import_vdv451_file(file_path_example)
+# Erstelle
+# den absoluten Pfad zum Zielverzeichnis
+abs_directory_path = os.path.abspath('UVG')
+# Erstelle ein Pattern, um alle .x10 Dateien in diesem Verzeichnis zu finden
+search_pattern = os.path.join(abs_directory_path, '*.x10')
+# Finde alle Dateien, die dem Pattern entsprechen
+x10_files = glob.glob(search_pattern)
 
-# Zeige die ersten Zeilen des DataFrame
-print(df_imported.head())
+
+alle_tabellen = []
+for datei in x10_files:
+    alle_tabellen.append(import_vdv451_file(datei))
+    print("Parsed file ", datei)
+
+print("fertschhh")
