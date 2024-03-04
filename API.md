@@ -66,7 +66,7 @@ This endpoint is used to check the status of the ingestion process. The UUID is 
 # CHOICE 2: Python Package
 
 The `eflips-ingest` package is designed to provide a standardized access method to the different ingesters. It is
-designed as a reusable [python](https://www.python.org) package providing a programmatic API. It provides teh `Ingester`
+designed as a reusable [python](https://www.python.org) package providing a programmatic API. It provides the `Ingester`
 class with the following methods:
 
 - `__init__(self, database_url: str)`: The constructor. It takes the database URL as a parameter.
@@ -77,7 +77,7 @@ class with the following methods:
     [introspecting](https://docs.python.org/3/library/inspect.html#introspecting-callables-with-the-signature-object) 
     this method. If a UUID is returned, this UUID can be used to start the ingestion process, even with another instance
     of this Ingester class (the validated input data is saved to a temporary directory).
-- `ingest(seld, UUID: UUID, progress_callback: None | Callable(float)) -> None`: This method is used to start the 
+- `ingest(self, UUID: UUID, progress_callback: None | Callable(float)) -> None`: This method is used to start the 
     ingestion process. It takes the UUID returned by the `validate` method and a callback function that will be called 
     with the progress of the ingestion process. It is suggested that the progress is displayed in the UI. This method
     may raise an exception if the ingestion process fails. *Note that exceptions should not be raised during the
