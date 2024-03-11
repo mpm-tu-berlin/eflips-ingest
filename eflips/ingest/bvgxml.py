@@ -1007,6 +1007,162 @@ def fix_max_sequence(database_url: str) -> None:
     conn.close()
 
 
+def merge_identical_stations(scenario_id: int, session: Session) -> None:
+    """
+    This method merges stations which have an identical name.
+    :param scenario_id: The scenario ID to use
+    :param session: An open database session
+    :return: Nothing. The stations are updated in the database
+    """
+    station_names = (
+        session.query(eflips.model.Station.name, func.count())
+        .filter(eflips.model.Station.scenario_id == scenario_id)
+        .group_by(eflips.model.Station.name)
+        .all()
+    )
+    for station_name, count in station_names:
+        if count == 1:
+            continue
+        all_stations_for_name = (
+            session.query(eflips.model.Station)
+            .filter(eflips.model.Station.name == station_name)
+            .filter(eflips.model.Station.scenario_id == scenario_id)
+            .order_by(eflips.model.Station.id)
+            .all()
+        )
+        # Keep the ID of the first station
+        first_station_id = all_stations_for_name[0].id
+        # For the Other IDs, update all objects that reference them to reference the first station
+        for station in all_stations_for_name[1:]:
+            # Update the routes
+            session.query(eflips.model.Route).filter(eflips.model.Route.departure_station_id == station.id).update(
+                {"departure_station_id": first_station_id}
+            )
+            session.query(eflips.model.Route).filter(eflips.model.Route.arrival_station_id == station.id).update(
+                {"arrival_station_id": first_station_id}
+            )
+
+            # Update the AssocRouteStations
+            session.query(eflips.model.AssocRouteStation).filter(
+                eflips.model.AssocRouteStation.station_id == station.id
+            ).update({"station_id": first_station_id})
+
+            # Update the stop times
+            session.query(eflips.model.StopTime).filter(eflips.model.StopTime.station_id == station.id).update(
+                {"station_id": first_station_id}
+            )
+
+            # Delete the station
+            session.refresh(station)  # Refresh the station object to get the updated routes
+            session.delete(station)
+
+
+def merge_identical_rotations(scenario_id: int, session: Session) -> None:
+    """
+    This method merges rotations which have an identical name. It does so by merging everything from
+    a rotation beginning at a "Betriebshof"to the next "Betriebshof".
+    This needs to be done because different parts of a rotation may be in different files, and so different
+    "Rotation" objects for what is essentially the same rotation may be created.
+    :param scenario_id: the scenario ID to use
+    :param session: an open database session
+    :return: Nothing. The rotations are updated in the database
+    """
+    DEPOT_NAME = "Betriebshof"
+
+    rotation_names = (
+        session.query(eflips.model.Rotation.name)
+        .filter(eflips.model.Rotation.scenario_id == scenario_id)
+        .group_by(eflips.model.Rotation.name)
+        .all()
+    )
+    for rotation_name in rotation_names:
+        all_rots_for_name = (
+            session.query(eflips.model.Rotation)
+            .filter(eflips.model.Rotation.name == rotation_name[0])
+            .filter(eflips.model.Rotation.scenario_id == scenario_id)
+            .all()
+        )
+        # Order them by the first trip's departure time
+        all_rots_for_name = sorted(all_rots_for_name, key=lambda rot: rot.trips[0].departure_time)
+
+        list_of_rotation_id_tuples_to_merge: List[List[int]] = []
+        rotation_ids_to_merge: List[int] = []
+
+        for rotation in all_rots_for_name:
+            first_station_name = rotation.trips[0].route.departure_station.name
+            last_station_name = rotation.trips[-1].route.arrival_station.name
+            first_station_departure_time = rotation.trips[0].departure_time
+            last_station_arrival_time = rotation.trips[-1].arrival_time
+
+            if DEPOT_NAME in first_station_name and DEPOT_NAME in last_station_name:
+                # This is a rotation that starts and ends at the depot
+                # We don't need to merge it with anything
+                continue
+            elif DEPOT_NAME in first_station_name and DEPOT_NAME not in last_station_name:
+                # This rotation starts at the depot and ends somewhere else
+                # Start a new list after appending the current list to the list of lists
+                list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
+                rotation_ids_to_merge = [rotation.id]
+            elif DEPOT_NAME not in first_station_name and DEPOT_NAME in last_station_name:
+                # This rotation starts somewhere else and ends at the depot
+                # Append the current rotation to the list
+                rotation_ids_to_merge.append(rotation.id)
+                list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
+                rotation_ids_to_merge = []
+            elif DEPOT_NAME not in first_station_name and DEPOT_NAME not in last_station_name:
+                # This rotation starts and ends somewhere else
+                # Append the current rotation to the list
+                rotation_ids_to_merge.append(rotation.id)
+            else:
+                raise ValueError("This should never happen")
+
+        # Remove empty lists
+        list_of_rotation_id_tuples_to_merge = [x for x in list_of_rotation_id_tuples_to_merge if len(x) > 0]
+
+        # Go through the list of lists and merge the rotations, if they form a valid rotation
+        for rotation_ids_to_merge in list_of_rotation_id_tuples_to_merge:
+            rotations = (
+                session.query(eflips.model.Rotation).filter(eflips.model.Rotation.id.in_(rotation_ids_to_merge)).all()
+            )
+            # Order the rotations by the first trip's departure time
+            rotations = sorted(rotations, key=lambda rot: rot.trips[0].departure_time)
+
+            # Check whether the rotations can be merged
+            # The first station of the first rotation must be the same as the last station of the last rotation
+            # And both must contain "Betriebshof"
+            if (
+                rotations[0].trips[0].route.departure_station.name != rotations[-1].trips[-1].route.arrival_station.name
+                or "Betriebshof" not in rotations[0].trips[0].route.departure_station.name
+                or "Betriebshof" not in rotations[-1].trips[-1].route.arrival_station.name
+            ):
+                # If the merge is not possible we delete these rotations
+                for rotation in rotations:
+                    for trip in rotation.trips:
+                        for stop_time in trip.stop_times:
+                            session.delete(stop_time)
+                        session.delete(trip)
+                    session.delete(rotation)
+            else:
+                # Merge the rotations by creating a new rotation
+                new_rotation = eflips.model.Rotation(
+                    name=rotations[0].name,
+                    scenario_id=rotations[0].scenario_id,
+                    vehicle_type_id=rotations[0].vehicle_type_id,
+                    allow_opportunity_charging=rotations[0].allow_opportunity_charging,
+                )
+                session.add(new_rotation)
+                session.flush()
+                for rotation in rotations:
+                    session.query(eflips.model.Trip).filter(eflips.model.Trip.rotation_id == rotation.id).update(
+                        {"rotation_id": new_rotation.id}
+                    )
+                    session.refresh(
+                        rotation
+                    )  # Refresh the rotation object to get the updated trips (there are now none)
+                    session.delete(rotation)
+                    session.flush()
+
+
 def ingest_bvgxml(
     paths: Union[str, List[str]],
     database_url: str,
@@ -1048,7 +1204,7 @@ def ingest_bvgxml(
             paths = [paths]
     paths_pathlike = [Path(p) for p in paths]
 
-    TOTAL_STEPS = 8
+    TOTAL_STEPS = 10
 
     ### STEP 1: Load the XML files into memory
     # First, we go through all the files and load them into memory
@@ -1163,19 +1319,22 @@ def ingest_bvgxml(
 
     session.commit()
 
-    # STEP 8: Fix the max sequence numbers
-    print(f"(8/{TOTAL_STEPS}) Fixing max sequence numbers")
+    # STEP 8: Merge identical stations
+    print(f"(8/{TOTAL_STEPS}) Merging identical stations")
+    merge_identical_stations(scenario_id, session)
+
+    # STEP 9: Combine rotations with the same name
+    print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
+    merge_identical_rotations(scenario_id, session)
+
+    # STEP 10: Fix the max sequence numbers
+    print(f"(10/{TOTAL_STEPS}) Fixing max sequence numbers")
     fix_max_sequence(database_url)
 
-    # TODO: Merge schedules - Maybe not necessary
-    # TODO: Duplicate trips offset by one week
     print(
         """
     The import is complete. You may still want to:
-    - Check for duplicate trips offset by one week (they would break the eFLIPs depot simulation)
-    - Merge Rotations, if it seems that there are some which do not en or start with an "Einsetzen" or "Aussetzen"
-      trip and look as if they would be part of the same rotation
-    
+    - Figure out what to do with  the Rotations starting or ending at an "Abstellfläche"
     """
     )
 
