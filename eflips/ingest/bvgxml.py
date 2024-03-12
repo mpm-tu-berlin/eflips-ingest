@@ -1318,14 +1318,23 @@ def ingest_bvgxml(
         route.name = "CHECK DISTANCE: " + route.name
 
     session.commit()
+    session.expunge_all()
 
     # STEP 8: Merge identical stations
     print(f"(8/{TOTAL_STEPS}) Merging identical stations")
     merge_identical_stations(scenario_id, session)
 
+    session.commit()
+    session.expunge_all()
+
     # STEP 9: Combine rotations with the same name
     print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
     merge_identical_rotations(scenario_id, session)
+
+    # Commit and close this session
+    session.commit()
+    session.close()
+
 
     # STEP 10: Fix the max sequence numbers
     print(f"(10/{TOTAL_STEPS}) Fixing max sequence numbers")
