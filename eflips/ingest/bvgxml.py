@@ -1335,7 +1335,6 @@ def ingest_bvgxml(
     session.commit()
     session.close()
 
-
     # STEP 10: Fix the max sequence numbers
     print(f"(10/{TOTAL_STEPS}) Fixing max sequence numbers")
     fix_max_sequence(database_url)
