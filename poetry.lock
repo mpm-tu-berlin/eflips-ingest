@@ -259,20 +259,24 @@ tomli = ["tomli (>=2.0.0,<3.0.0)"]
 
 [[package]]
 name = "eflips-model"
-version = "2.3.0"
+version = "3.0.0"
 description = "A common data model for the eflips family of electric vehicle simulation & optimization tools."
 optional = false
-python-versions = ">=3.9,<4.0"
-files = [
-    {file = "eflips_model-2.3.0-py3-none-any.whl", hash = "sha256:b81827f524644af9e58c57407d1f338bb93b7886049b7721001ea9457f5665b3"},
-    {file = "eflips_model-2.3.0.tar.gz", hash = "sha256:f67d7de3b9cb8da094c6c04d8713b883cba5c450afe344e05c90a60e1940c347"},
-]
+python-versions = "^3.9"
+files = []
+develop = false
 
 [package.dependencies]
-alembic = ">=1.12.1,<2.0.0"
-geoalchemy2 = ">=0.14.2,<0.15.0"
-psycopg2-binary = ">=2.9.9,<3.0.0"
-sqlalchemy = ">=2.0.23,<3.0.0"
+alembic = "^1.12.1"
+geoalchemy2 = "^0.14.2"
+psycopg2-binary = "^2.9.9"
+sqlalchemy = "^2.0.23"
+
+[package.source]
+type = "git"
+url = "https://github.com/mpm-tu-berlin/eflips-model.git"
+reference = "feature/multi-depot"
+resolved_reference = "450658d60946a36111a0aa15ce3757194f4590e5"
 
 [[package]]
 name = "exceptiongroup"
@@ -1354,4 +1358,4 @@ test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "3a53924fefae19c08e66754b1952f5554172f13e210a60d0c70b88502267c683"
+content-hash = "362bb7dd0c516dc55f14ad5612e910d66f3d39b2db2783da2331c3be1ebf014e"

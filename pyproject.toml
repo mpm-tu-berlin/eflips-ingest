@@ -14,7 +14,7 @@ include = ["LICENSE.md"]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-eflips-model = "^2.2.0"
+eflips-model = {git = "https://github.com/mpm-tu-berlin/eflips-model.git", rev = "feature/multi-depot"}
 requests = "^2.31.0"
 fire = "^0.5.0"
 lxml = "^5.1.0"
