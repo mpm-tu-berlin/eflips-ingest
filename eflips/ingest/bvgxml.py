@@ -1163,6 +1163,30 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
                     session.flush()
 
 
+def identify_and_delete_overlapping_rotations(scenario_id: int, session: Session) -> None:
+    """
+    Identify and delete rotations with overlapping trips. These may be caused by the rotation merging function.
+    :param scenario_id: The scenario ID to use
+    :param session: An open database session
+    :return: Nothing. The rotations are updated in the database
+    """
+    logger = logging.getLogger(__name__)
+    rotations = session.query(eflips.model.Rotation).filter(eflips.model.Rotation.scenario_id == scenario_id).all()
+    for rotation in rotations:
+        trips = rotation.trips
+        for i in range(len(trips) - 1):
+            if trips[i].arrival_time > trips[i + 1].departure_time:
+                logger.warning(
+                    f"Rotation {rotation.id} has overlapping trips {trips[i].id} and {trips[i + 1].id}. Deleting the rotation"
+                )
+                for trip in trips:
+                    for stop_time in trip.stop_times:
+                        session.delete(stop_time)
+                    session.delete(trip)
+                session.delete(rotation)
+                break
+
+
 def ingest_bvgxml(
     paths: Union[str, List[str]],
     database_url: str,
@@ -1204,7 +1228,7 @@ def ingest_bvgxml(
             paths = [paths]
     paths_pathlike = [Path(p) for p in paths]
 
-    TOTAL_STEPS = 10
+    TOTAL_STEPS = 11
 
     ### STEP 1: Load the XML files into memory
     # First, we go through all the files and load them into memory
@@ -1331,12 +1355,16 @@ def ingest_bvgxml(
     print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
     merge_identical_rotations(scenario_id, session)
 
+    # STEP 10: Identify overlapping rotations
+    print(f"(10/{TOTAL_STEPS}) Identifying and deleting overlapping rotations")
+    identify_and_delete_overlapping_rotations(scenario_id, session)
+
     # Commit and close this session
     session.commit()
     session.close()
 
-    # STEP 10: Fix the max sequence numbers
-    print(f"(10/{TOTAL_STEPS}) Fixing max sequence numbers")
+    # STEP 11: Fix the max sequence numbers
+    print(f"(11/{TOTAL_STEPS}) Fixing max sequence numbers")
     fix_max_sequence(database_url)
 
     print(
