@@ -3,6 +3,13 @@ import csv
 import glob
 import os
 from datetime import datetime
+import vdv452data
+from typing import List
+
+
+import xsdata.formats.dataclass.parsers.json #todo ist derzeit nur ne entwickler dependency
+import xsdata.formats.dataclass.parsers.config # todo AGAIN!!! s.a.
+
 
 import pandas as pd
 from dataclasses import dataclass
@@ -67,7 +74,7 @@ def import_vdv451_file(file_path):
                 time_format = parts[2]
 
             elif command == 'tbl':
-                table_name = parts[1].upper()
+                table_name = parts[1].upper().strip()
 
             elif command == 'atr':
                 # Spaltennamen definieren
@@ -124,3 +131,33 @@ for datei in x10_files:
     print("Parsed file ", datei)
 
 print("fertschhh")
+
+# overwrite default behavior of failing on (additional) non-vdv452 properties that possibly where added by the data provider
+config = xsdata.formats.dataclass.parsers.config.ParserConfig(fail_on_unknown_properties=False)
+
+
+parser = xsdata.formats.dataclass.parsers.JsonParser(config=config)
+wichtigste_tabellen_klassennamen = [vdv452data.RecLid, vdv452data.RecFrt, vdv452data.RecFrtHzt, vdv452data.RecUmlauf, vdv452data.LidVerlauf,
+                                    vdv452data.Fahrzeug]
+wichtigste_tabellen_tabellennamen = [x.Meta.name for x in wichtigste_tabellen_klassennamen]
+#mappings_tables_classes = [(x, x.Meta.name) for x in wichtigen_objekte]
+# the above is like:
+#[
+#    (RecLid, 'REC_LID')
+#    (RecFrt, 'REC_FRT')
+#    (RecFrtHzt, 'REC_FRT_HZT')
+
+#]
+
+for tabelle in alle_tabellen:
+    if wichtigste_tabellen_tabellennamen.count(tabelle.table_name) > 0: #FUND
+        index = wichtigste_tabellen_tabellennamen.index(tabelle.table_name)
+        klasse = wichtigste_tabellen_klassennamen[index]
+        #if tabelle.table_name == 'REC_LID':
+            #print(tabelle.df.head())
+        json = tabelle.df.to_json(orient='records')
+        #print(json)
+
+        # parse mit xsdata das json
+        parsed = parser.from_string(json, List[klasse])
+        print(parsed[:5]) #max print first 5
