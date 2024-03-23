@@ -1,7 +1,7 @@
 import csv
 import glob
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import sqlalchemy
 from sqlalchemy.orm import declarative_base
@@ -219,20 +219,21 @@ def pandas_magic_versuch2():
     # TODO e mobility oben ergänzen (BAtterie bspw.)
 
     # Part 3: Create the eflips Vehicles (Fahrzeuge) with respect to the current valid BASIS_VERSION
-    fahrzeuge = alle_tabellen_dict['FAHRZEUG']
-    fahrzeuge = fahrzeuge[fahrzeuge['BASIS_VERSION'] == gueltige_version]
-
-    assignments_fzg_nr_to_eflips_vehicle = {}
-    all_vehicles = []
-
-    for index, row in fahrzeuge.iterrows():
-        vehicle = Vehicle(
-            scenario=scenario,
-            name=str(row['FZG_NR']), # eig ist das nur ein Dezimaler ID Bezeichner, rihtige "namen" haben wir im FAHRZEUG Table nicht, höchstens POLKENN oder FIN könnten wir sonst nehmen?!
-            vehicle_type=assignments_fzg_typ_nr_to_eflips_vehicletype[row['FZG_TYP_NR']]
-        )
-        all_vehicles.append(vehicle)
-        assignments_fzg_nr_to_eflips_vehicle[row['FZG_NR']] = vehicle
+    # TODO this code technically works; however, we dont neccessarily have a "FAHRZEUG" table, so should we leave this out?
+    # fahrzeuge = alle_tabellen_dict['FAHRZEUG']
+    # fahrzeuge = fahrzeuge[fahrzeuge['BASIS_VERSION'] == gueltige_version]
+    #
+    # assignments_fzg_nr_to_eflips_vehicle = {}
+    # all_vehicles = []
+    #
+    # for index, row in fahrzeuge.iterrows():
+    #     vehicle = Vehicle(
+    #         scenario=scenario,
+    #         name=str(row['FZG_NR']), # eig ist das nur ein Dezimaler ID Bezeichner, rihtige "namen" haben wir im FAHRZEUG Table nicht, höchstens POLKENN oder FIN könnten wir sonst nehmen?!
+    #         vehicle_type=assignments_fzg_typ_nr_to_eflips_vehicletype[row['FZG_TYP_NR']]
+    #     )
+    #     all_vehicles.append(vehicle)
+    #     assignments_fzg_nr_to_eflips_vehicle[row['FZG_NR']] = vehicle
 
     # Part 4: Create Stations
     orte = alle_tabellen_dict['REC_ORT']
@@ -282,7 +283,6 @@ def pandas_magic_versuch2():
         assignments_li_nr_to_eflips_line[li_nr] = line
 
 
-
     for index, row in routes.iterrows():
 
 
@@ -293,6 +293,8 @@ def pandas_magic_versuch2():
         lid_verlauf_route_df = dfx[(dfx['BASIS_VERSION'] == gueltige_version) &
                                    (dfx['LI_NR'] == row['LI_NR']) &
                                    (dfx['STR_LI_VAR'] == row['STR_LI_VAR'])].sort_values('LI_LFD_NR', ascending=True)
+
+
 
         elapsed_distance = 0
         assocs_pre = []
@@ -368,15 +370,116 @@ def pandas_magic_versuch2():
     rotations = alle_tabellen_dict['REC_UMLAUF']
     rotations = rotations[rotations['BASIS_VERSION'] == gueltige_version]
 
-    alle_trips = [] # Unabhängig von ihrer Rotation..
+    alle_trips = [] # Unabhängig von ihrer Rotation gesammelt hier
+
+    all_rotations_eflips_obj = []
+
 
     for index, row in rotations.iterrows():
+
 
         # Get trip info PER UM_UID & TAGESART_NR combination, ...
         # but the actual trips & stop time Object are created per Rotation object.. TODO ist das so erforderlich oder kann ich quasi das selbe Trip objekt mehrfach verwenden.
 
         # TODO 1 hier alle Arrivals an den Stops und die Dwell Duration ermitteln.
 
+        # Alle Fahrten ermitteln, die zu dieser Rotation gehören
+        df_frt = alle_tabellen_dict['REC_FRT']
+        df_frt = df_frt[(df_frt['BASIS_VERSION'] == gueltige_version) &
+                        (df_frt['UM_UID'] == row['UM_UID']) &
+                        (df_frt['TAGESART_NR'] == row['TAGESART_NR'])]
+
+        trips_pre = []
+
+        for _, row_frt in df_frt.iterrows():
+            dfx = alle_tabellen_dict['LID_VERLAUF'].copy(deep=True)  # need a deep copy as we will alter th
+            lid_verlauf_route_df = dfx[(dfx['BASIS_VERSION'] == gueltige_version) &
+                                       (dfx['LI_NR'] == row_frt['LI_NR']) &
+                                       (dfx['STR_LI_VAR'] == row_frt['STR_LI_VAR'])].sort_values('LI_LFD_NR',
+                                                                                             ascending=True)
+            trip_start_seconds_since_midnight = row_frt['FRT_START']
+            stop_times_trip_pre = [] # collect them as list of dicts as I need to crete multiple StopTimes object with different arrival_times later; so I will have no problems with "copying/altering" the objects .
+
+            # We need to get the arrival and dwell times at the stations (as seconds since route start)
+            # these depend on the Fahrzeitgruppe (FGR_NR)
+
+            # TODO im VDV haben die Umläufe ein ausgezeichnetes Start- und Endstation. Eigentlich sollte es aber über die Trips sich ergeben, denke / hoffe ich.
+            # TODO  insofern denke ich, dass wir diese angaben nicht brauchen? ich weiß auch nicht wie ich sie überhaupt im Rotation Objekt eintragen sollte.
+
+            # Trips:
+            # so VDV 452 knows 4 different types of FAHRTART_NRn:
+            # 1: Normalfahrt (Normal trip)
+            # 2: Betriebshofausfahrt (Departure from the depot)
+            # 3: Betriebshofeinfahrt (Arrival at the depot)
+            # 4: Zufahrt (a Route used for Line changes and empty runs)
+
+            # as eFLIPS do only know passenger and empty trips, only the 1st type (Normalfahrt) is considered as PASSENGER, the other types as EMPTY
+
+            # In VDV, there are two possibilities for Stop Times:
+            # 1: In the ORT_HZTF: Stop Times for a FGR_NR (Fahrtzeitgruppe)
+            # 2: In the REC_FRT_HZT: Stop Times for a FRT_FID (Fahrt)
+            # I have no concrete info what happens if both are given, but currently I saw always only one of those Tables existent or filled with info..
+            # Therefore I assume (TODO check if that is correct?) to first look in the REC_FRT_HZT and if nothing is found, then look in the ORT_HZTF, so that
+            # a Trip-Specific Stop Time overwrites the general Stop Time for a FGR_NR.?
+
+            arrival_time = trip_start_seconds_since_midnight # We need this to keep track of "time elapsed", so that we can calculate arrival time at every station.
+
+            # Add the first stop time
+            first_stop = assignments_onr_typ_ort_nr_to_eflips_station[
+                (lid_verlauf_route_df.iloc[0]['ONR_TYP_NR'], lid_verlauf_route_df.iloc[0]['ORT_NR'])]
+            stop_times_trip_pre.append({'station': first_stop, 'arrival_time': arrival_time})
+
+            # Bereichsnummer nötig für die Selektion der Fahrzeiten; die kriegen wir aus der Linien-Tabelle REC_LID
+            dfa = alle_tabellen_dict['REC_LID']
+            dfa = dfa[(dfa['BASIS_VERSION'] == gueltige_version) &
+                        (dfa['LI_NR'] == row_frt['LI_NR']) &
+                        (dfa['STR_LI_VAR'] == row_frt['STR_LI_VAR'])]
+            bereichsnr = dfa['BEREICH_NR'].values[0]
+
+
+            # get the stop times for the other stops
+            for i in range(1, len(lid_verlauf_route_df)):
+                start_ort_nr = lid_verlauf_route_df.iloc[i - 1]['ORT_NR']
+                start_onr_typ_nr = lid_verlauf_route_df.iloc[i - 1]['ONR_TYP_NR']
+
+                ziel_ort_nr = lid_verlauf_route_df.iloc[i]['ORT_NR']
+                ziel_onr_typ_nr = lid_verlauf_route_df.iloc[i]['ONR_TYP_NR']
+
+                dfz = alle_tabellen_dict['SEL_FZT_FELD']
+                dfz = dfz[(dfz['BASIS_VERSION'] == gueltige_version) &
+                          (dfz['BEREICH_NR'] == bereichsnr) &
+                          (dfz['FGR_NR'] == row_frt['FGR_NR']) &
+                          (dfz['ONR_TYP_NR'] == start_onr_typ_nr) &
+                          (dfz['ORT_NR'] == start_ort_nr) &
+                            (dfz['SEL_ZIEL'] == ziel_ort_nr) &
+                            (dfz['SEL_ZIEL_TYP'] == ziel_onr_typ_nr)]
+
+                fahrzeit = dfz['SEL_FZT'].values[0]
+
+                arrival_time = arrival_time + fahrzeit
+
+                # Check for dwell time
+                # TODO mach ich später!!!!!!!!
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+                # TODO wichtig
+
+
+                stop_times_trip_pre.append({'station': assignments_onr_typ_ort_nr_to_eflips_station[(ziel_onr_typ_nr, ziel_ort_nr)], 'arrival_time': arrival_time})
+
+            triptype = TripType.PASSENGER if row_frt['FAHRTART_NR'] == 1 else TripType.EMPTY
+            trip_route = assignments_li_nr_str_li_var_to_eflips_route[(row_frt['LI_NR'], row_frt['STR_LI_VAR'])]
+
+            trips_pre.append({'trip_type': triptype,
+                              'departure_time': trip_start_seconds_since_midnight,
+                              'arrival_time': arrival_time,
+                              'stop_times': stop_times_trip_pre,
+                              'route': trip_route})
 
         # and now duplicate it for every BETRIEBSTAG that belongs texceo the TAGESART_NR:
         # as the rotation is bound to a TAGESART_NR (day type number), we need to duplicate the rotation for each BETRIEBSTAG (service day) in the FIRMENKALENDER Table belonging to this TAGESART_NR
@@ -388,13 +491,13 @@ def pandas_magic_versuch2():
                   (days_df['TAGESART_NR'] == row[
                       'TAGESART_NR'])]  # BEREICH_NR as part of the primary key of the Segment and Route needs to be considered as the route & segments belong to a certain type of transportation (bus, tram, etc.)
 
-        betriebstage = days_df['BETRIEBSTAG'].unique()
+        betriebstage = days_df['BETRIEBSTAG'].unique() # alle Betriebstage, die DIESE TAGESART_NR haben, ..
         for betriebstag in betriebstage:
             rotation = Rotation(
                 scenario=scenario,
                 name=str(row['UM_UID']) + "_" + str(betriebstag),
                 vehicle_type=vehicle_type,
-                trips = [], # Zunächst leer lassen, "relationships" werden automatisch synchroniseirt
+                trips = [], # Zunächst leer lassen, "relationships" werden automatisch synchroniseirt TODO stimmt es ? war so aus dem tutorial!"
                 allow_opportunity_charging=False, #TODO hmm kriegen wir irgendwo die info
             )
 
@@ -402,23 +505,39 @@ def pandas_magic_versuch2():
             assignments_um_uid_betriebstag_to_eflips_rotation[(row['UM_UID'], betriebstag)] = rotation # todo hope we never need the UM_UID<->TAGESART_NR bound
 
             # TODO 2 Hier die Trips und Stop Times erstellen als Objekte
+            trips = []
+            betriebstag_date_midnight = datetime.strptime(str(betriebstag), "%Y%m%d")
+            for trip_pre in trips_pre:
+                trips.append(
+                    Trip(
+                        scenario=scenario,
+                        route=trip_pre['route'],
+                        trip_type=trip_pre['trip_type'],
+                        departure_time = betriebstag_date_midnight + timedelta(seconds=int(trip_pre['departure_time'])),
+                        arrival_time = betriebstag_date_midnight + timedelta(seconds=int(trip_pre['arrival_time'])),
+                        rotation=rotation,
+                    )
+                )
+
+                stop_times = []
+                for stop_time_pre in trip_pre['stop_times']:
+                    stop_times.append(
+                        StopTime(
+                            scenario=scenario,
+                            station=stop_time_pre['station'],
+                            arrival_time = betriebstag_date_midnight + timedelta(seconds=int(stop_time_pre['arrival_time'])),
+                        )
+                    )
+                trips[-1].stop_times = stop_times
+
+            rotation.trips = trips
+
+            all_rotations_eflips_obj.append(rotation)
+
+        print("Done importing rotation ", row['UM_UID'], " ", row['TAGESART_NR'])
 
 
-
-    # We need to get the arrival and dwell times at the stations (as seconds since route start)
-    # these depend on the Fahrzeitgruppe (FGR_NR)
-
-    # TODO im VDV haben die Umläufe ein ausgezeichnetes Start- und Endstation. Eigentlich sollte es aber über die Trips sich ergeben, denke / hoffe ich.
-    # TODO  insofern denke ich, dass wir diese angaben nicht brauchen? ich weiß auch nicht wie ich sie überhaupt im Rotation Objekt eintragen sollte.
-
-    # Trips:
-    # so VDV 452 knows 4 different types of FAHRTART_NRn:
-    # 1: Normalfahrt (Normal trip)
-    # 2: Betriebshofausfahrt (Departure from the depot)
-    # 3: Betriebshofeinfahrt (Arrival at the depot)
-    # 4: Zufahrt (a Route used for Line changes and empty runs)
-
-    # as eFLIPS do only know passenger and empty trips, only the 1st type (Normalfahrt) is considered as PASSENGER, the other types as EMPTY
+    #TODO3 wir müssen noch die Trips für Betriebshofzu- und abfahrten usw. verarbeiten, siehe S. 65 VDV 452 Doku
 
 
 
@@ -441,116 +560,3 @@ if __name__ == '__main__':
 
 # ==================================================================================
 
-
-
-
-
-
-
-## ALTER CODE::::
-def run_sqlalchemy_magic(metadata):
-
-    engine = create_engine('sqlite:///temp_database_somerandomnumberss893434.db')
-    metadata.bind = engine # TODO muss das VOR dem anlegen der SQLAlchemy Table objekte passieren?
-    metadata.create_all(engine)
-
-    conn = engine.connect()
-
-    # TEST 1
-    # Base = declarative_base()
-    #
-    # class BACHFIS(Base):
-    #     __tablename__ = 'BACHFIS'
-    #     id = Column(Integer, primary_key=True)
-    #     KIRK = Column(DECIMAL(precision=9))
-    #
-    # # Erstelle ein leeres Dictionary
-    # data_types_dict = {}
-    #
-    # # Iteriere über die Spaltenattribute der Klasse BACHFIS
-    # for column in BACHFIS.__table__.columns:
-    #     # Füge den Namen der Spalte und den entsprechenden Datentyp dem Dictionary hinzu
-    #     data_types_dict[column.name] = column.type
-    #
-    # print(data_types_dict)
-
-    # END TEST 1
-
-    path = os.path.abspath('UVG')
-    alle_tabellen = create_list_of_the_parsed_tables(path)
-
-    wichtige_schemata = {
-        'BASIS_VER_GUELTIGKEIT': vdv_schema.sqt_basis_ver_gueltigkeit,
-        # 'MENGE_BASIS_VERSIONEN': vdv_schema.sqal_table_menge_basis_versionen,
-        'FIRMENKALENDER': vdv_schema.sqal_table_firmenkalender,
-
-        'MENGE_ONR_TYP': vdv_schema.sqal_table_menge_onr_typ,
-        'MENGE_ORT_TYP': vdv_schema.sqal_table_menge_ort_typ,
-        'REC_HP': vdv_schema.sqal_table_rec_hp,
-        'REC_ORT': vdv_schema.sqal_table_rec_ort,
-
-        'FAHRZEUG': vdv_schema.sqal_table_rec_hp,
-        'MENGE_BEREICH': vdv_schema.sqal_table_menge_bereich,
-        'MENGE_FZG_TYP': vdv_schema.sqal_table_menge_fzg_typ,
-
-        'REC_SEL': vdv_schema.sqal_table_rec_sel,
-        'MENGE_FGR': vdv_schema.sqal_table_menge_fgr,
-        'ORT_HZTF': vdv_schema.sqt_ort_hztf,
-        'SEL_FZT_FELD': vdv_schema.sqt_sel_fzt_feld,
-        'REC_UEB': vdv_schema.sqt_rec_ueb,
-        'UEB_FZT': vdv_schema.sqt_ueb_fzt,
-
-        'LID_VERLAUF': vdv_schema.sqt_lid_verlauf,
-        'REC_LID': vdv_schema.sqt_rec_lid,
-        'REC_FRT': vdv_schema.sqt_rec_frt,
-        'REC_FRT_HZT': vdv_schema.sqt_rec_frt_hzt,
-        'REC_UMLAUF': vdv_schema.sqt_rec_umlauf,
-
-
-
-    }
-
-
-
-    for tabelle in alle_tabellen:
-
-        tabellenname = tabelle.table_name
-        if tabellenname in wichtige_schemata.keys(): #FUND
-            sqal_table_schema = wichtige_schemata[tabellenname]
-
-
-        else:
-            continue
-
-        # Schema ziehen:
-        # DataFrame-Spalten automatisch aus dem Schema extrahieren
-        inspector = sqlalchemy.inspect(sqal_table_schema)
-        columns_info = inspector.columns
-
-        colnames_extra = [] # will hold the column names as a list, as using column_keys directly yields an Index.
-        the_schema = {}
-        for key in columns_info.keys():
-            type = columns_info[key].type
-            the_schema[key] = type
-
-            colnames_extra.append(key)
-
-
-        print(the_schema)
-        print(colnames_extra)
-
-        # Inserts the Dataframe into the SQLite Database, using the defined schema for the table.
-        # TODO Columns that are in the dataframe (respective, in the input data), but not in the schema, will NOT be discarded beforehand, but appear in the SQLite file. Ignore this (currenty) or somehow discard them (seems to be bit tricky)
-        tabelle.df.to_sql(tabelle.table_name, engine, index=False, if_exists='replace', dtype=the_schema)
-
-
-
-
-
-
-    #os.remove('temp_database_somerandomnumberss893434.db')
-    today_int = int(datetime.today().strftime('%Y%m%d')) # Today's date as integer, eg. 20220301 for the 1st of March 2022
-    stmt1 = vdv_schema.sqt_basis_ver_gueltigkeit.select().where(vdv_schema.sqt_basis_ver_gueltigkeit.c.ver_gueltigkeit <= today_int)
-    erg = conn.execute(stmt1).fetchall()
-
-    print(erg)

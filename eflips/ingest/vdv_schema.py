@@ -1,7 +1,85 @@
+## TODO actually kann die Datei hier weg ... könnte aber für Reference gründe sinnvoll sein, Teile davon in irgendeiner form zu behalten ...
+
+
 from sqlalchemy import MetaData, Table, Column
 from sqlalchemy.types import *
 from sqlalchemy.orm import registry
 
+## ALTER CODE::::
+def run_sqlalchemy_magic(metadata):
+
+    engine = create_engine('sqlite:///temp_database_somerandomnumberss893434.db')
+    metadata.bind = engine # TODO muss das VOR dem anlegen der SQLAlchemy Table objekte passieren?
+    metadata.create_all(engine)
+
+    conn = engine.connect()
+
+    path = os.path.abspath('UVG')
+    alle_tabellen = create_list_of_the_parsed_tables(path)
+
+    wichtige_schemata = {
+        'BASIS_VER_GUELTIGKEIT': sqt_basis_ver_gueltigkeit,
+        # 'MENGE_BASIS_VERSIONEN': sqal_table_menge_basis_versionen,
+        'FIRMENKALENDER': sqal_table_firmenkalender,
+
+        'MENGE_ONR_TYP': sqal_table_menge_onr_typ,
+        'MENGE_ORT_TYP': sqal_table_menge_ort_typ,
+        'REC_HP': sqal_table_rec_hp,
+        'REC_ORT': sqal_table_rec_ort,
+
+        'FAHRZEUG': sqal_table_rec_hp,
+        'MENGE_BEREICH': sqal_table_menge_bereich,
+        'MENGE_FZG_TYP': sqal_table_menge_fzg_typ,
+
+        'REC_SEL': sqal_table_rec_sel,
+        'MENGE_FGR': sqal_table_menge_fgr,
+        'ORT_HZTF': sqt_ort_hztf,
+        'SEL_FZT_FELD': sqt_sel_fzt_feld,
+        'REC_UEB': sqt_rec_ueb,
+        'UEB_FZT': sqt_ueb_fzt,
+
+        'LID_VERLAUF': sqt_lid_verlauf,
+        'REC_LID': sqt_rec_lid,
+        'REC_FRT': sqt_rec_frt,
+        'REC_FRT_HZT': sqt_rec_frt_hzt,
+        'REC_UMLAUF': sqt_rec_umlauf,
+
+
+
+    }
+
+
+
+    for tabelle in alle_tabellen:
+
+        tabellenname = tabelle.table_name
+        if tabellenname in wichtige_schemata.keys(): #FUND
+            sqal_table_schema = wichtige_schemata[tabellenname]
+
+
+        else:
+            continue
+
+        # Schema ziehen:
+        # DataFrame-Spalten automatisch aus dem Schema extrahieren
+        inspector = sqlalchemy.inspect(sqal_table_schema)
+        columns_info = inspector.columns
+
+        colnames_extra = [] # will hold the column names as a list, as using column_keys directly yields an Index.
+        the_schema = {}
+        for key in columns_info.keys():
+            type = columns_info[key].type
+            the_schema[key] = type
+
+            colnames_extra.append(key)
+
+
+        print(the_schema)
+        print(colnames_extra)
+
+        # Inserts the Dataframe into the SQLite Database, using the defined schema for the table.
+        # TODO Columns that are in the dataframe (respective, in the input data), but not in the schema, will NOT be discarded beforehand, but appear in the SQLite file. Ignore this (currenty) or somehow discard them (seems to be bit tricky)
+        tabelle.df.to_sql(tabelle.table_name, engine, index=False, if_exists='replace', dtype=the_schema)
 
 
 
