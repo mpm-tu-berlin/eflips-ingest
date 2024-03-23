@@ -1,5 +1,9 @@
 from sqlalchemy import MetaData, Table, Column
 from sqlalchemy.types import *
+from sqlalchemy.orm import registry
+
+
+
 
 # TODO wollen wir hier immer die "neueste" Basis-Version nehmen?
 #  (Ist in BASIS_VER_GUELTIGKEIT die version deren Beginn am kürzesten "zurück
@@ -14,9 +18,12 @@ from sqlalchemy.types import *
 
 # Schema definieren
 metadata = MetaData()
-sqal_table_basis_ver_gueltigkeit = Table('BASIS_VER_GUELTIGKEIT', metadata,
-              Column('ver_gueltigkeit', DECIMAL(8)),
-              Column('basis_version', DECIMAL(9)))
+
+mapper_registry = registry()
+
+sqt_basis_ver_gueltigkeit = Table('BASIS_VER_GUELTIGKEIT', metadata,
+                                  Column('ver_gueltigkeit', DECIMAL(8)),
+                                  Column('basis_version', DECIMAL(9)))
 
 # sqal_table_menge_basis_versionen = Table('MENGE_BASIS_VERSIONEN', metadata,
 #               Column('basis_version', DECIMAL(9)),
