@@ -2,19 +2,13 @@ import csv
 import glob
 import os
 from datetime import datetime, timedelta
+import time
 
-import sqlalchemy
 from sqlalchemy.orm import declarative_base
-
-from typing import List
-
 from sqlalchemy import create_engine, Column, Integer, DECIMAL
 
-
 import pandas as pd
-from dataclasses import dataclass
 
-import vdv_schema
 
 from eflips.model import (
     Area, AreaType, AssocPlanProcess, AssocRouteStation, Base, BatteryType,
@@ -173,6 +167,7 @@ def pandas_magic_versuch2():
     # fufu = versions_df.sort_values('VER_GUELTIGKEIT', ascending=False)
     # print(fufu)
 
+    # todo evtl möglichkeit einbauen, manuell die
     filtered_df = versions_df[versions_df['VER_GUELTIGKEIT'] <= today_int].sort_values('VER_GUELTIGKEIT', ascending=False)
 
     gueltige_version = filtered_df.iloc[0]['BASIS_VERSION']
@@ -282,19 +277,20 @@ def pandas_magic_versuch2():
         all_lines.append(line)
         assignments_li_nr_to_eflips_line[li_nr] = line
 
+    # Prepare REC_SEL Table
+    # BEREICH_NR as part of the primary key of the Segment and Route needs to be considered as the route & segments belong to a certain type of transportation (bus, tram, etc.)
+    dfy = alle_tabellen_dict['REC_SEL'].set_index(['BASIS_VERSION', 'BEREICH_NR', 'ONR_TYP_NR', 'ORT_NR', 'SEL_ZIEL_TYP', 'SEL_ZIEL']).sort_index()
+
+    # fürn linienverlauf:
+    # (sorting the index will also already gives us "ascending LFD_NR" in the trip order)
+    dfx = alle_tabellen_dict['LID_VERLAUF'].set_index(
+        ['BASIS_VERSION', 'LI_NR', 'STR_LI_VAR', 'LI_LFD_NR']).sort_index()
 
     for index, row in routes.iterrows():
 
-
-
         # a) Routenverlauf zusammenstellen
 
-        dfx = alle_tabellen_dict['LID_VERLAUF'].copy(deep=True)  # need a deep copy as we will alter th
-        lid_verlauf_route_df = dfx[(dfx['BASIS_VERSION'] == gueltige_version) &
-                                   (dfx['LI_NR'] == row['LI_NR']) &
-                                   (dfx['STR_LI_VAR'] == row['STR_LI_VAR'])].sort_values('LI_LFD_NR', ascending=True)
-
-
+        lid_verlauf_route_df = dfx.loc[gueltige_version, row['LI_NR'], row['STR_LI_VAR']].copy(deep=True)
 
         elapsed_distance = 0
         assocs_pre = []
@@ -308,10 +304,6 @@ def pandas_magic_versuch2():
             (lid_verlauf_route_df.iloc[0]['ONR_TYP_NR'], lid_verlauf_route_df.iloc[0]['ORT_NR'])]
         assocs_pre.append((first_stop, 0))
 
-        dfy = alle_tabellen_dict['REC_SEL']
-        dfy = dfy[(dfy['BASIS_VERSION'] == gueltige_version) &
-                  (dfy['BEREICH_NR'] == row[
-                      'BEREICH_NR'])]  # BEREICH_NR as part of the primary key of the Segment and Route needs to be considered as the route & segments belong to a certain type of transportation (bus, tram, etc.)
 
         # TODO mit den Überlauferfahrten, die hab ich derzeit gar nicht, brauchen wir die? dz nur REC_SEL aber gibt auch UEB_SEL oder so
         for i in range(1, len(lid_verlauf_route_df)):
@@ -321,10 +313,8 @@ def pandas_magic_versuch2():
             ziel_ort_nr = lid_verlauf_route_df.iloc[i]['ORT_NR']
             ziel_onr_typ_nr = lid_verlauf_route_df.iloc[i]['ONR_TYP_NR']
 
-            laenge = dfy[(dfy['ONR_TYP_NR'] == start_onr_typ_nr) &
-                         (dfy['ORT_NR'] == start_ort_nr) &
-                         (dfy['SEL_ZIEL_TYP'] == ziel_onr_typ_nr) &
-                         (dfy['SEL_ZIEL'] == ziel_ort_nr)]['SEL_LAENGE'].values[0]
+            laenge = dfy.loc[(gueltige_version, row['BEREICH_NR'], start_onr_typ_nr, start_ort_nr,
+                        ziel_onr_typ_nr, ziel_ort_nr), 'SEL_LAENGE']
 
             elapsed_distance = elapsed_distance + laenge
             assocs_pre.append((assignments_onr_typ_ort_nr_to_eflips_station[(ziel_onr_typ_nr, ziel_ort_nr)], elapsed_distance))
@@ -360,6 +350,7 @@ def pandas_magic_versuch2():
             assocs.append(assoc)
 
         route.assoc_route_stations = assocs
+
         print("Done importing route ", row['LIDNAME'])
 
 
@@ -374,14 +365,39 @@ def pandas_magic_versuch2():
 
     all_rotations_eflips_obj = []
 
+    # Bereichsnummer nötig für die Selektion der Fahrzeiten; die kriegen wir aus der Linien-Tabelle REC_LID
+    dfa = alle_tabellen_dict['REC_LID'].set_index(['BASIS_VERSION', 'LI_NR', 'STR_LI_VAR']).sort_index()
+
+    # Analog für Fahrzeug das vorbereiten
+    dfz = alle_tabellen_dict['SEL_FZT_FELD'].set_index(
+        ['BASIS_VERSION', 'BEREICH_NR', 'FGR_NR', 'ONR_TYP_NR', 'ORT_NR', 'SEL_ZIEL_TYP', 'SEL_ZIEL']).sort_index()
+
+    # und fürn linienverlauf:
+    # (sorting the index will also already gives us "ascending LFD_NR" in the trip order)
+    dfx = alle_tabellen_dict['LID_VERLAUF'].set_index(['BASIS_VERSION', 'LI_NR', 'STR_LI_VAR', 'LI_LFD_NR']).sort_index()
+
+    # fuer die Dwell Times:
+
+    # 1. Dwell times per FAHRT
+    if 'REC_FRT_HZT' in alle_tabellen_dict.keys():
+        df_frt_hzt = alle_tabellen_dict['REC_FRT_HZT'].set_index(['BASIS_VERSION', 'FRT_FID', 'ONR_TYP_NR', 'ORT_NR']).sort_index()
+    else:
+        df_frt_hzt = None
+
+    # 2. Dwell times per Fahrzeitgruppe (FGR_NR)
+    if 'ORT_HZTF' in alle_tabellen_dict.keys():
+        df_ort_hztf = alle_tabellen_dict['ORT_HZTF'].set_index(
+            ['BASIS_VERSION', 'FGR_NR', 'ONR_TYP_NR', 'ORT_NR']).sort_index()
+    else:
+        df_ort_hztf = None
 
     for index, row in rotations.iterrows():
 
+        zeitanfang = time.time()  # mal laufzeit analyse für performance verbesserung ziel
 
         # Get trip info PER UM_UID & TAGESART_NR combination, ...
         # but the actual trips & stop time Object are created per Rotation object.. TODO ist das so erforderlich oder kann ich quasi das selbe Trip objekt mehrfach verwenden.
 
-        # TODO 1 hier alle Arrivals an den Stops und die Dwell Duration ermitteln.
 
         # Alle Fahrten ermitteln, die zu dieser Rotation gehören
         df_frt = alle_tabellen_dict['REC_FRT']
@@ -392,11 +408,7 @@ def pandas_magic_versuch2():
         trips_pre = []
 
         for _, row_frt in df_frt.iterrows():
-            dfx = alle_tabellen_dict['LID_VERLAUF'].copy(deep=True)  # need a deep copy as we will alter th
-            lid_verlauf_route_df = dfx[(dfx['BASIS_VERSION'] == gueltige_version) &
-                                       (dfx['LI_NR'] == row_frt['LI_NR']) &
-                                       (dfx['STR_LI_VAR'] == row_frt['STR_LI_VAR'])].sort_values('LI_LFD_NR',
-                                                                                             ascending=True)
+            lid_verlauf_route_df = dfx.loc[gueltige_version, row_frt['LI_NR'], row_frt['STR_LI_VAR']].copy(deep=True)
             trip_start_seconds_since_midnight = row_frt['FRT_START']
             stop_times_trip_pre = [] # collect them as list of dicts as I need to crete multiple StopTimes object with different arrival_times later; so I will have no problems with "copying/altering" the objects .
 
@@ -427,15 +439,10 @@ def pandas_magic_versuch2():
             # Add the first stop time
             first_stop = assignments_onr_typ_ort_nr_to_eflips_station[
                 (lid_verlauf_route_df.iloc[0]['ONR_TYP_NR'], lid_verlauf_route_df.iloc[0]['ORT_NR'])]
-            stop_times_trip_pre.append({'station': first_stop, 'arrival_time': arrival_time})
+            stop_times_trip_pre.append({'station': first_stop, 'arrival_time': arrival_time, 'dwell_time': 0})
 
             # Bereichsnummer nötig für die Selektion der Fahrzeiten; die kriegen wir aus der Linien-Tabelle REC_LID
-            dfa = alle_tabellen_dict['REC_LID']
-            dfa = dfa[(dfa['BASIS_VERSION'] == gueltige_version) &
-                        (dfa['LI_NR'] == row_frt['LI_NR']) &
-                        (dfa['STR_LI_VAR'] == row_frt['STR_LI_VAR'])]
-            bereichsnr = dfa['BEREICH_NR'].values[0]
-
+            bereichsnr = dfa.loc[(gueltige_version, row_frt['LI_NR'], row_frt['STR_LI_VAR']), 'BEREICH_NR']
 
             # get the stop times for the other stops
             for i in range(1, len(lid_verlauf_route_df)):
@@ -445,32 +452,27 @@ def pandas_magic_versuch2():
                 ziel_ort_nr = lid_verlauf_route_df.iloc[i]['ORT_NR']
                 ziel_onr_typ_nr = lid_verlauf_route_df.iloc[i]['ONR_TYP_NR']
 
-                dfz = alle_tabellen_dict['SEL_FZT_FELD']
-                dfz = dfz[(dfz['BASIS_VERSION'] == gueltige_version) &
-                          (dfz['BEREICH_NR'] == bereichsnr) &
-                          (dfz['FGR_NR'] == row_frt['FGR_NR']) &
-                          (dfz['ONR_TYP_NR'] == start_onr_typ_nr) &
-                          (dfz['ORT_NR'] == start_ort_nr) &
-                            (dfz['SEL_ZIEL'] == ziel_ort_nr) &
-                            (dfz['SEL_ZIEL_TYP'] == ziel_onr_typ_nr)]
-
-                fahrzeit = dfz['SEL_FZT'].values[0]
+                fahrzeit = dfz.loc[(gueltige_version, bereichsnr, row_frt['FGR_NR'], start_onr_typ_nr, start_ort_nr, ziel_onr_typ_nr, ziel_ort_nr)]['SEL_FZT'].iloc[0]
 
                 arrival_time = arrival_time + fahrzeit
 
                 # Check for dwell time
-                # TODO mach ich später!!!!!!!!
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
-                # TODO wichtig
+                # I assume to first look if there is a specific dwell time for the trip (FRT_FID) and if not, then look for the general dwell time for the FGR_NR
+                dwell_time = 0
+
+                # TODO wenn nur eine Tabelle vorhanden ist in der kram drin steht, aber ich finde meinen Ort da nicht, ist die Haltezeit dann 0?!? Habe ich im UVG Beispiel so..
+                if df_frt_hzt is not None:
+                    if (gueltige_version, row_frt['FRT_FID'], ziel_onr_typ_nr, ziel_ort_nr) in df_frt_hzt.index:
+                        dwell_time = df_frt_hzt.loc[(gueltige_version, row_frt['FRT_FID'], ziel_onr_typ_nr, ziel_ort_nr)]['FRT_HZT_ZEIT']
 
 
-                stop_times_trip_pre.append({'station': assignments_onr_typ_ort_nr_to_eflips_station[(ziel_onr_typ_nr, ziel_ort_nr)], 'arrival_time': arrival_time})
+                elif df_ort_hztf is not None:
+                    if ((gueltige_version, row_frt['FGR_NR'], ziel_onr_typ_nr, ziel_ort_nr)) in df_ort_hztf.index:
+                        dwell_time = df_ort_hztf.loc[(gueltige_version, row_frt['FGR_NR'], ziel_onr_typ_nr, ziel_ort_nr)]['HP_HZT']
+
+
+                stop_times_trip_pre.append({'station': assignments_onr_typ_ort_nr_to_eflips_station[(ziel_onr_typ_nr, ziel_ort_nr)], 'arrival_time': arrival_time, 'dwell_time': dwell_time})
+                arrival_time = arrival_time + dwell_time # important for the next iteration ("start time at last station = arrival time at last + dwell time there"), very important to do this AFTER putting the StopTime in the list
 
             triptype = TripType.PASSENGER if row_frt['FAHRTART_NR'] == 1 else TripType.EMPTY
             trip_route = assignments_li_nr_str_li_var_to_eflips_route[(row_frt['LI_NR'], row_frt['STR_LI_VAR'])]
@@ -484,6 +486,7 @@ def pandas_magic_versuch2():
         # and now duplicate it for every BETRIEBSTAG that belongs texceo the TAGESART_NR:
         # as the rotation is bound to a TAGESART_NR (day type number), we need to duplicate the rotation for each BETRIEBSTAG (service day) in the FIRMENKALENDER Table belonging to this TAGESART_NR
 
+        #print("verlauf gen: sec ", time.time() - zeitanfang)
         vehicle_type = assignments_fzg_typ_nr_to_eflips_vehicletype[row['FZG_TYP_NR']]
 
         days_df = alle_tabellen_dict['FIRMENKALENDER']
@@ -525,6 +528,7 @@ def pandas_magic_versuch2():
                         StopTime(
                             scenario=scenario,
                             station=stop_time_pre['station'],
+                            dwell_duration=timedelta(seconds=int(stop_time_pre['dwell_time'])),
                             arrival_time = betriebstag_date_midnight + timedelta(seconds=int(stop_time_pre['arrival_time'])),
                         )
                     )
@@ -534,11 +538,10 @@ def pandas_magic_versuch2():
 
             all_rotations_eflips_obj.append(rotation)
 
-        print("Done importing rotation ", row['UM_UID'], " ", row['TAGESART_NR'])
+        zeitende = time.time()
+        print("Done importing rotation ", row['UM_UID'], " ", row['TAGESART_NR'], " ,took ", zeitende - zeitanfang, " seconds")
 
-
-    #TODO3 wir müssen noch die Trips für Betriebshofzu- und abfahrten usw. verarbeiten, siehe S. 65 VDV 452 Doku
-
+    #TODO 3 wir müssen noch die Trips für Betriebshofzu- und abfahrten usw. verarbeiten, siehe S. 65 VDV 452 Doku
 
 
 
