@@ -1,11 +1,14 @@
 import csv
 import glob
 import os
+import sys
 from datetime import datetime, timedelta
 import time
 
 import pandas as pd
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from eflips.model import (
     Area,
@@ -160,7 +163,31 @@ def create_list_of_the_parsed_tables(abs_path_to_folder_with_vdv_files):
 
 
 def pandas_magic_versuch2():
+    # Verbindungsinformationen
+    username = 'postgres'  # Benutzername
+    password = 'passwd123'  # Passwort
+    dbname = 'myeflipsdb'  # Datenbankname
+    host = '127.0.0.1'  # Hostname oder IP-Adresse der Datenbank
+    port = '2022'  # Port der Datenbank, standardmäßig ist dies 5432 für PostgreSQL
+
+    # Erstellen der Verbindungs-URL für PostgreSQL
+    # Die URL hat das Format: dialect+driver://username:password@host:port/dbname
+    # Hier verwenden wir den psycopg2-Treiber für PostgreSQL
+    # Wenn du einen anderen Treiber verwendest, ändere den Teil nach "postgresql://" entsprechend
+    db_url = f'postgresql://{username}:{password}@{host}:{port}/{dbname}'
+
+    engine = create_engine(db_url, echo=False
+                           )  # Change echo to True to see SQL queries
+
+    # Create a session with the eflips-model schema
+    # NOTE: THIS DELETES ALL DATA IN THE DATABASE
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+
+    session = Session(engine)
+
     scenario = Scenario(name="VDV Import Scenario")
+    session.add(scenario)
 
     # TODO should we directly put everything into a session?? Like, e.g.
     #
@@ -194,8 +221,6 @@ def pandas_magic_versuch2():
     # We need this to map the FZG_TYP_NR from other tables to the correct eflips VehicleType object later
     assignments_fzg_typ_nr_to_eflips_vehicletype = {}
 
-    # ... and also store all created eflips VehicleType objects in a list to later add them to the session
-    all_vehicle_types = []
 
     for index, row in vehicle_types_df.iterrows():
         vehicle_type = VehicleType(
@@ -216,16 +241,22 @@ def pandas_magic_versuch2():
         # TODO the length (FZG_LAENGE) is sometimes 0, so should we handle this, as such a length does not make sense in reality?
         if "FZG_LAENGE" in vehicle_types_df.columns:
             vehicle_type.length = row["FZG_LAENGE"]
+        else:
+            vehicle_type.length = 0
         if "FZG_BREITE" in vehicle_types_df.columns:
             vehicle_type.width = (
                 row["FZG_BREITE"] / 100
             )  # in VDV 452, the width is in cm, but in eflips, it is in meters
+        else:
+            vehicle_type.width = 0
         if "FZG_HOEHE" in vehicle_types_df.columns:
             vehicle_type.height = (
                 row["FZG_HOEHE"] / 100
             )  # in VDV 452, the height is in cm, but in eflips, it is in meters
+        else:
+            vehicle_type.height = 0
 
-        all_vehicle_types.append(vehicle_type)
+        session.add(vehicle_type)
         assignments_fzg_typ_nr_to_eflips_vehicletype[row["FZG_TYP_NR"]] = vehicle_type
 
     # TODO add the e mobility things (e.g. Battery Type above, or electrified station info below, ...)
@@ -236,7 +267,6 @@ def pandas_magic_versuch2():
     # fahrzeuge = fahrzeuge[fahrzeuge['BASIS_VERSION'] == gueltige_version]
     #
     # assignments_fzg_nr_to_eflips_vehicle = {}
-    # all_vehicles = []
     #
     # for index, row in fahrzeuge.iterrows():
     #     vehicle = Vehicle(
@@ -244,7 +274,7 @@ def pandas_magic_versuch2():
     #         name=str(row['FZG_NR']), # eig ist das nur ein Dezimaler ID Bezeichner, rihtige "namen" haben wir im FAHRZEUG Table nicht, höchstens POLKENN oder FIN könnten wir sonst nehmen?!
     #         vehicle_type=assignments_fzg_typ_nr_to_eflips_vehicletype[row['FZG_TYP_NR']]
     #     )
-    #     all_vehicles.append(vehicle)
+    #     session.add(vehicle)
     #     assignments_fzg_nr_to_eflips_vehicle[row['FZG_NR']] = vehicle
 
     # Part 4: Create Stations
@@ -252,7 +282,6 @@ def pandas_magic_versuch2():
     orte = orte[orte["BASIS_VERSION"] == gueltige_version]
 
     assignments_onr_typ_ort_nr_to_eflips_station = {}
-    all_stations = []
 
     # TODO Hier gibt es die geschichte mit den "doppelten Orten", also bspw. wenn in der DB eine haltestelle 2x enthalten ist (vermutlich Hin/Rück usw. die dann verschiedene Lat/Long angaben ja haben, ..)
     # TODO Geom KÖNNTE man hier evtl . auch noch ziehen; manchmal ist es angegeben, manchmal aber auch einfach 0.0 und nutzlos; oder es fehlt die höhe, dann kann ich ja kein 3D-Punkt angeben.. lassen wir es weg?
@@ -262,10 +291,10 @@ def pandas_magic_versuch2():
             scenario=scenario,
             name=row["ORT_NAME"],
             # geom=...,
-            # TODO is_electrified=...,
+            is_electrified=False, # TODO gather actual value...
         )
 
-        all_stations.append(station)
+        session.add(station)
         assignments_onr_typ_ort_nr_to_eflips_station[(row["ONR_TYP_NR"], row["ORT_NR"])] = station
 
     # Part 5 & 6: Create Lines, Routes and Station assignments
@@ -273,10 +302,8 @@ def pandas_magic_versuch2():
     routes = routes[routes["BASIS_VERSION"] == gueltige_version]
 
     assignments_li_nr_to_eflips_line = {}
-    all_lines = []
 
     assignments_li_nr_str_li_var_to_eflips_route = {}
-    all_routes = []
 
     # Note: There may be many different Names for a line, due to different directions, etc. so the given name here is just the line number as string.
     # however, as REC_LID actually contains the Routes Rather than the lines. (Route = Variant of a line)
@@ -289,7 +316,7 @@ def pandas_magic_versuch2():
             name=str(li_nr),
         )
 
-        all_lines.append(line)
+        session.add(line)
         assignments_li_nr_to_eflips_line[li_nr] = line
 
     # Prepare REC_SEL Table
@@ -351,36 +378,32 @@ def pandas_magic_versuch2():
             departure_station=first_stop,
             arrival_station=last_stop,
             line=assignments_li_nr_to_eflips_line[row["LI_NR"]],
-            distance=total_distance,
+            distance=int(total_distance),
         )
 
-        all_routes.append(route)
-        assignments_li_nr_str_li_var_to_eflips_route[(row["LI_NR"], row["STR_LI_VAR"])] = route
 
         # Finally, create the assocs & add them to the route
         assocs = []
         for station, elapsed_distance in assocs_pre:
             assoc = AssocRouteStation(
-                scenario=scenario, route=route, station=station, elapsed_distance=elapsed_distance
+                scenario=scenario, route=route, station=station, elapsed_distance=int(elapsed_distance)
             )
             assocs.append(assoc)
 
         route.assoc_route_stations = assocs
 
+        assignments_li_nr_str_li_var_to_eflips_route[(row["LI_NR"], row["STR_LI_VAR"])] = route
+        session.add(route)
+
         print("Done importing route ", row["LIDNAME"])
 
     # Part 7: Create the Rotations
 
-    all_rotations = []
     assignments_um_uid_betriebstag_to_eflips_rotation = (
         {}
     )  # here we need to map um_uid not with TAGESART_NR, but with the BETRIEBSTAG, as we need to duplicate the rotation for each BETRIEBSTAG associated to the TAGESART_NR (see below..)
     rotations = all_tables_dict["REC_UMLAUF"]
     rotations = rotations[rotations["BASIS_VERSION"] == gueltige_version]
-
-    alle_trips = []  # Unabhängig von ihrer Rotation gesammelt hier
-
-    all_rotations_eflips_obj = []
 
     # Bereichsnummer nötig für die Selektion der Fahrzeiten; die kriegen wir aus der Linien-Tabelle REC_LID
     dfa = all_tables_dict["REC_LID"].set_index(["BASIS_VERSION", "LI_NR", "STR_LI_VAR"]).sort_index()
@@ -490,6 +513,18 @@ def pandas_magic_versuch2():
                     )
                 ]["SEL_FZT"].iloc[0]
 
+                if int(fahrzeit) < 1:
+                    # Fahrzeit zwischen den Stationen ist also 0.
+                    # SEL_FZT ist lt. Spezifikation aber Dezimalwert im Bereich 0..65532, d.h. dieser Fall kann in VDV Files,
+                    # die die Spezifikation erfüllen, auf jeden Fall vorkommen.
+                    # Im eFLIPS Model ist aber eine Fahrzeit von 0 nicht möglich, weil sonst wegen der identischen arrival_time
+                    # zwei StopTimes mit identischem Index (trip_id, arrival_time, scenario_id) existieren würden
+
+                    # daher wird hier eine zusätzliche Sekunde zur Fahrzeit hinzugefügt!
+                    # TODO bitte prüfen, ob das irgendwelche Side effects später hat!! Evtl. für anschließende Trips, den Ladevorgang im Depot o.Ä.
+
+                    fahrzeit = 1
+
                 arrival_time = arrival_time + fahrzeit
 
                 # Check for dwell time
@@ -550,11 +585,12 @@ def pandas_magic_versuch2():
                 scenario=scenario,
                 name=str(row["UM_UID"]) + "_" + str(betriebstag),
                 vehicle_type=vehicle_type,
-                trips=[],  # Zunächst leer lassen, "relationships" werden automatisch synchroniseirt TODO stimmt es ? war so aus dem tutorial!"
+                trips=[],  # Zunächst leer lassen, "relationships" werden automatisch synchroniseirt
                 allow_opportunity_charging=False,  # TODO hmm kriegen wir irgendwo die info
             )
 
-            all_rotations.append(rotation)
+            session.add(rotation)
+
             assignments_um_uid_betriebstag_to_eflips_rotation[
                 (row["UM_UID"], betriebstag)
             ] = rotation  # todo hope we never need the UM_UID<->TAGESART_NR bound
@@ -562,20 +598,20 @@ def pandas_magic_versuch2():
             # TODO 2 Hier die Trips und Stop Times erstellen als Objekte
             trips = []
             betriebstag_date_midnight = datetime.strptime(str(betriebstag), "%Y%m%d")
-            for trip_pre in trips_pre:
+            for tp in trips_pre:
                 trips.append(
                     Trip(
                         scenario=scenario,
-                        route=trip_pre["route"],
-                        trip_type=trip_pre["trip_type"],
-                        departure_time=betriebstag_date_midnight + timedelta(seconds=int(trip_pre["departure_time"])),
-                        arrival_time=betriebstag_date_midnight + timedelta(seconds=int(trip_pre["arrival_time"])),
+                        route=tp["route"],
+                        trip_type=tp["trip_type"],
+                        departure_time=betriebstag_date_midnight + timedelta(seconds=int(tp["departure_time"])),
+                        arrival_time=betriebstag_date_midnight + timedelta(seconds=int(tp["arrival_time"])),
                         rotation=rotation,
                     )
                 )
 
                 stop_times = []
-                for stop_time_pre in trip_pre["stop_times"]:
+                for stop_time_pre in tp["stop_times"]:
                     stop_times.append(
                         StopTime(
                             scenario=scenario,
@@ -587,9 +623,7 @@ def pandas_magic_versuch2():
                     )
                 trips[-1].stop_times = stop_times
 
-            rotation.trips = trips
-
-            all_rotations_eflips_obj.append(rotation)
+            session.add_all(trips)
 
         zeitende = time.time()
         print(
@@ -604,8 +638,12 @@ def pandas_magic_versuch2():
 
     # TODO 3 wir müssen noch die Trips für Betriebshofzu- und abfahrten usw. verarbeiten, siehe S. 65 VDV 452 Doku
 
-    # TODO im SQLalchemy dann alles zu die sessions packen?!?!? (habe nirgendwo session add gemacht!!!)
+    # TODO 4 irgendwelche Depot infos nötig?
+
     # TODO umgehen mit files, die ein anderes namens schema haben! Siehe VDV 451(?)
+
+    # Part 8: Commit the session
+    session.commit()
 
 
 if __name__ == "__main__":
