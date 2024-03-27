@@ -59,10 +59,6 @@ class TestBVGXML:
         assert loaded_fahrplan is not None
         assert isinstance(loaded_fahrplan, Linienfahrplan)
 
-    @pytest.mark.skipif(
-        not os.getenv("DATABASE_URL"),
-        reason="DATABASE_URL not set",
-    )
     def test_create_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -86,6 +82,10 @@ class TestBVGXML:
                 assert station.name_short is not None
                 assert station.name_short != ""
 
+    @pytest.mark.skipif(
+        not os.getenv("OPENELEVATION_URL"),
+        reason="OPENELEVATION_URL not set",
+    )
     def test_create_routes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -114,6 +114,10 @@ class TestBVGXML:
                     assert assoc.station is not None
                     assert assoc.location is not None
 
+    @pytest.mark.skipif(
+        not os.getenv("OPENELEVATION_URL"),
+        reason="OPENELEVATION_URL not set",
+    )
     def test_create_trip_prototypes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -140,6 +144,10 @@ class TestBVGXML:
                 assert len(trip.time_profile_points) > 0
                 assert len(trip.time_profile_points) == len(trip.route.assoc_route_stations)
 
+    @pytest.mark.skipif(
+        not os.getenv("OPENELEVATION_URL"),
+        reason="OPENELEVATION_URL not set",
+    )
     def test_create_trips_and_vehicle_schedules(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -192,6 +200,10 @@ class TestBVGXML:
                 Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
             )
 
+    @pytest.mark.skipif(
+        not os.getenv("OPENELEVATION_URL"),
+        reason="OPENELEVATION_URL not set",
+    )
     def test_recenter_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
