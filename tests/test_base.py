@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from eflips.ingest.base import AbstractIngester
 
 
+@pytest.skip("This is a base class and should not be run.", allow_module_level=True)
 class TestBaseIngester(ABC):
     """
 
