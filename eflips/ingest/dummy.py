@@ -3,7 +3,7 @@ import pickle
 from dataclasses import dataclass
 from datetime import timedelta, datetime
 from enum import Enum
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
 
 import sqlalchemy
@@ -100,6 +100,7 @@ class DummyIngester(AbstractIngester):
         rotation_per_line: int,
         opportunity_charging: bool,
         bus_type: BusType,
+        progress_callback: None | Callable[[float], None] = None,
     ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
         Dummy prepare method.
@@ -149,9 +150,12 @@ class DummyIngester(AbstractIngester):
             with open(temp_dir / "data.pkl", "wb") as f:
                 pickle.dump(data, f)
 
+            if progress_callback:
+                progress_callback(1.0)
+
             return True, uuid
 
-    def ingest(self, uuid: UUID) -> None:
+    def ingest(self, uuid: UUID, progress_callback: None | Callable[[float], None] = None) -> None:
         if not os.path.exists(self.path_for_uuid(uuid) / "data.pkl"):
             raise ValueError("Data file does not exist.")
 
@@ -176,6 +180,11 @@ class DummyIngester(AbstractIngester):
                     line = self._create_line(scenario, session, depot, i, j, params.opportunity_charging)
                     for k in range(params.rotation_per_line):
                         self._create_rotation(scenario, session, line, k, params.opportunity_charging)
+                        if progress_callback:
+                            progress_callback(
+                                (i * params.line_count * params.rotation_per_line + j * params.rotation_per_line + k)
+                                / (params.depot_count * params.line_count * params.rotation_per_line)
+                            )
 
             session.commit()
 

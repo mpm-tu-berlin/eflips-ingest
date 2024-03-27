@@ -25,6 +25,7 @@ class TestDummyIngester(TestBaseIngester):
             rotation_per_line=rotation_per_line,
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
+            progress_callback=self.progress_callback,
         )
 
         result: bool = ret_val[0]
@@ -42,6 +43,7 @@ class TestDummyIngester(TestBaseIngester):
             rotation_per_line=rotation_per_line,
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
+            progress_callback=self.progress_callback,
         )
         result = ret_val[0]
         assert isinstance(result, bool)
@@ -52,6 +54,10 @@ class TestDummyIngester(TestBaseIngester):
         assert "Wrong Depot Count" in errors
 
         # In reality, it would be better to check all error messages here
+
+    @staticmethod
+    def progress_callback(progress: float) -> None:
+        assert 0 <= progress <= 1
 
     def test_ingest(self, ingester) -> None:
         name = "Entenhausen"
@@ -69,6 +75,7 @@ class TestDummyIngester(TestBaseIngester):
             rotation_per_line=rotation_per_line,
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
+            progress_callback=self.progress_callback,
         )
 
         assert ret_val[0] is True

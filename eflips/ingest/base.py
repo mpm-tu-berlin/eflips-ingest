@@ -3,7 +3,7 @@ import tempfile
 from abc import abstractmethod, ABC
 from enum import Enum
 from pathlib import Path
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Callable
 from uuid import UUID
 
 
@@ -24,7 +24,9 @@ class AbstractIngester(ABC):
 
     @abstractmethod
     def prepare(
-        self, **kwargs: Dict[str, str | int | float | bool | Enum | Path]
+        self,
+        progress_callback: None | Callable[[float], None] = None,
+        **kwargs: Dict[str, str | int | float | bool | Enum | Path],
     ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
         Prepare and validate the input data for ingestion.
@@ -44,6 +46,10 @@ class AbstractIngester(ABC):
         - subclass of Enum: For enumerated data.
         - pathlib.Path: For file paths. *This is what should be done to express the need for uploaded files.*
 
+        Additionally the method should accept a progress_callback parameter, which is a function that accepts a float
+        value between 0 and 1. This function should be called periodically to update the progress of the ingestion
+        process.
+
         When developing a (web) interface, it is suggested to use introspection on the parameters of this method to
         generate a form for the user to fill in. This can be done by using the :meth:`inspect.signature` method from the
         `inspect` module.
@@ -60,10 +66,13 @@ class AbstractIngester(ABC):
         pass
 
     @abstractmethod
-    def ingest(self, uuid: UUID) -> None:
+    def ingest(self, uuid: UUID, progress_callback: None | Callable[[float], None] = None) -> None:
         """
         Ingest the data into the database. In order for this method to be called, the :meth:`prepare` method must have
         returned a UUID, indicating that the preparation was successful.
+
+        This method must call the progress_callback function periodically to update the progress of the ingestion
+        process. The progress_callback function should accept a float value between 0 and 1.
 
         :param uuid: A UUID representing the data to ingest.
         :return: Nothing. If unexpected errors occur, they should be raised as exceptions.

@@ -11,7 +11,6 @@ from sqlalchemy import create_engine
 from eflips.ingest.base import AbstractIngester
 
 
-@pytest.skip("This is a base class and should not be run.", allow_module_level=True)
 class TestBaseIngester(ABC):
     """
 
@@ -47,6 +46,7 @@ class TestBaseIngester(ABC):
         pass
 
     @abstractmethod
+    @pytest.mark.skip("This is an abstract test class.")
     def test_prepare(self, ingester) -> None:
         """
         Test the meth:`prepare` method of the ingester.
@@ -59,6 +59,7 @@ class TestBaseIngester(ABC):
         """
 
     @abstractmethod
+    @pytest.mark.skip("This is an abstract test class.")
     def test_ingest(self, ingester) -> None:
         """
         Test the meth:`ingest` method of the ingester.
@@ -91,6 +92,8 @@ class TestBaseIngester(ABC):
         # Obtain parameter names and types using introspection
         sig = inspect.signature(ingester.prepare)
         for param in sig.parameters.values():
+            if param.name == "progress_callback":
+                continue
             if param.annotation in [str, int, float, bool, pathlib.Path]:
                 continue
             elif issubclass(param.annotation, Enum):
@@ -109,6 +112,8 @@ class TestBaseIngester(ABC):
         # Obtain parameter names and types using introspection
         sig = inspect.signature(ingester.prepare)
         for param in sig.parameters.values():
+            if param.name == "progress_callback":
+                continue
             assert param.name in ingester.prepare_param_names.keys()
             if issubclass(param.annotation, Enum):
                 assert isinstance(ingester.prepare_param_names[param.name], dict)
@@ -128,6 +133,8 @@ class TestBaseIngester(ABC):
         # Obtain parameter names and types using introspection
         sig = inspect.signature(ingester.prepare)
         for param in sig.parameters.values():
+            if param.name == "progress_callback":
+                continue
             assert param.name in ingester.prepare_param_description.keys()
             if issubclass(param.annotation, Enum):
                 assert isinstance(ingester.prepare_param_description[param.name], dict)
