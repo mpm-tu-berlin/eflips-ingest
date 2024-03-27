@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 import os
 from multiprocessing import Pool
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 from eflips.model import *
 from sqlalchemy import create_engine
@@ -58,7 +58,7 @@ def print_rotations_by_station() -> None:
             print(f"{first_station.name} ({first_station_id}) -> {last_station.name} ({last_station_id}): {rotations}")
 
 
-def prune_scenario(station: Station, scenario_id: int, session: Session) -> None:
+def prune_scenario(stations: Station | List[Station], scenario_id: int, session: Session) -> None:
     """
     Creates a scenario with all the rotations starting and ending at the given station
     """
@@ -68,6 +68,10 @@ def prune_scenario(station: Station, scenario_id: int, session: Session) -> None
     total_count += session.query(Line).filter(Line.scenario_id == scenario_id).count()
     total_count += session.query(Station).filter(Station.scenario_id == scenario_id).count()
 
+    if isinstance(stations, Station):
+        stations = [stations]
+    station_ids = [station.id for station in stations]
+
     # Create a global progress bar
     with tqdm(total=total_count, smoothing=0) as pbar:
         # Find all the rotations *not* starting and ending at this station
@@ -75,8 +79,8 @@ def prune_scenario(station: Station, scenario_id: int, session: Session) -> None
         dropped_rotation_ids = []
         for rotation in rotations:
             if (
-                rotation.trips[0].route.departure_station_id == station.id
-                and rotation.trips[-1].route.arrival_station_id == station.id
+                rotation.trips[0].route.departure_station_id == rotation.trips[-1].route.arrival_station_id
+                and rotation.trips[0].route.departure_station_id in station_ids
             ):
                 pbar.update(1)
                 continue
@@ -169,3 +173,36 @@ if __name__ == "__main__":
                 raise e
             finally:
                 session.commit()
+
+    # After creating six scenarios for the six most popular single depots, also create a scenario for all these six depots
+    station_ids = [s[0] for s in stationss]
+    with Session(engine) as session:
+        try:
+            station_names = [
+                session.query(Station).filter(Station.id == station_id).one().name for station_id in station_ids
+            ]
+            station_short_names = [
+                session.query(Station).filter(Station.id == station_id).one().name_short for station_id in station_ids
+            ]
+
+            scenario = session.query(Scenario).filter(Scenario.id == 1).one()
+            new_scenario = scenario.clone(session)
+            new_scenario.name = f"All Rotations starting and ending at the six most popular depots"
+            session.flush()
+            session.expunge_all()  # With the new cloning code, this will not be necessary, but for now it is
+
+            # Find this station in the new scenario
+            stations = (
+                session.query(Station)
+                .filter(Station.scenario_id == new_scenario.id)
+                .filter(Station.name.in_(station_names))
+                .filter(Station.name_short.in_(station_short_names))
+                .all()
+            )
+
+            prune_scenario(stations, new_scenario.id, session)
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.commit()
