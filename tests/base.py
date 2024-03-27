@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 from eflips.ingest.base import AbstractIngester
 
 
-class TestBaseIngester(ABC):
+class BaseIngester(ABC):
     """
 
     Abstract base class for the ingester tests. Contains some common methods and attributes.

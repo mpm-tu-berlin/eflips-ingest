@@ -5,10 +5,10 @@ import pytest
 
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.dummy import DummyIngester, BusType
-from tests.test_base import TestBaseIngester
+from tests.base import BaseIngester
 
 
-class TestDummyIngester(TestBaseIngester):
+class TestDummyIngester(BaseIngester):
     def test_prepare(self, ingester) -> None:
         name = "Entenhausen"
         depot_count = 5
