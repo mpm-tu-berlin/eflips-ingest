@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Dict, Tuple
 from uuid import UUID, uuid4
 
+import sqlalchemy
 from eflips.model.depot import Depot, AssocPlanProcess, Process, Area, Plan, AreaType
 from eflips.model.general import Scenario, VehicleType
 from eflips.model.network import Station, Line, Route, VoltageLevel, ChargeType
@@ -41,20 +42,6 @@ class DummyIngester(AbstractIngester):
     The dummy ingester is a dummy implementation of the :class:`IngestBase` class. It is used
     to demonstrate the implementation.
     """
-
-    def __init(self, database_url: str):
-        """
-        Constructor for the BaseIngester class.
-
-        :param database_url: A string representing the URL of the database to ingest into. Must be of the form
-                             postgresql://user:password@host:port/database. An url of the format
-                             postgis://user:password@host:port/database (django style) will be converted to the
-                             appropriate format.
-        :return: None
-        """
-        if database_url.startswith("postgis://"):
-            database_url = database_url.replace("postgis://", "postgresql://", 1)
-        self.database_url = database_url
 
     @staticmethod
     def _create_vehicle_types(scenario: Scenario, session: Session, bus_type: BusType) -> None:
@@ -105,7 +92,7 @@ class DummyIngester(AbstractIngester):
             case _:
                 raise ValueError("Invalid bus type")
 
-    def prepare(
+    def prepare(  # type: ignore
         self,
         name: str,
         depot_count: int,
@@ -222,7 +209,7 @@ class DummyIngester(AbstractIngester):
             },
         }
 
-    def _create_depot(self, scenario, session, i) -> Depot:
+    def _create_depot(self, scenario: Scenario, session: sqlalchemy.orm.Session, i: int) -> Depot:
         """
         Creates a dummy depot.
 
@@ -328,7 +315,15 @@ class DummyIngester(AbstractIngester):
 
         return depot
 
-    def _create_line(self, scenario, session, depot, i, j, opportuinity_charging) -> Line:
+    def _create_line(
+        self,
+        scenario: Scenario,
+        session: sqlalchemy.orm.Session,
+        depot: Depot,
+        i: int,
+        j: int,
+        opportuinity_charging: bool,
+    ) -> Line:
         bus_line = Line(scenario=scenario, name=f"Bus Line {i}-{j}")
         session.add(bus_line)
 
@@ -368,13 +363,8 @@ class DummyIngester(AbstractIngester):
         return bus_line
 
     def _create_rotation(
-        self,
-        scenario,
-        session,
-        line,
-        k,
-        opportunity_charging,
-    ):
+        self, scenario: Scenario, session: sqlalchemy.orm.Session, line: Line, k: int, opportunity_charging: bool
+    ) -> None:
         # dirtily load the vehicle type
         vehicle_type = session.query(VehicleType).filter(VehicleType.scenario_id == scenario.id).one()
 

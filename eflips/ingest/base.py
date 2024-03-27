@@ -23,13 +23,18 @@ class AbstractIngester(ABC):
         self.database_url = database_url
 
     @abstractmethod
-    def prepare(self, **kwargs) -> Tuple[bool, UUID | Dict[str, str]]:
+    def prepare(
+        self, **kwargs: Dict[str, str | int | float | bool | Enum | Path]
+    ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
         Prepare and validate the input data for ingestion.
 
         The keyword arguments should be set to specific arguments when subclassing this method. Additionally, the
         :meth:`prepare_param_names` and :meth:`prepare_param_description` methods should be implemented to provide hints
         for the parameters of this method.
+
+        This method of subclassing vilotaes the Liskov Substitution Principle, as the subclassed method has a different
+        signature than the superclass method. As such, the subclass should be marked with # type: ignore.
 
         The types for keyword arguments should be limited to the following:
         - str: For text data.
