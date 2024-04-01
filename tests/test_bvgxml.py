@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from eflips.ingest.bvgxml import (
+from eflips.ingest.legacy.bvgxml import (
     load_and_validate_xml,
     create_stations,
     setup_working_dictionaries,
@@ -18,7 +18,7 @@ from eflips.ingest.bvgxml import (
     create_trips_and_vehicle_schedules,
     recenter_station,
 )
-from eflips.ingest.xmldata import Linienfahrplan
+from eflips.ingest.legacy.xmldata import Linienfahrplan
 
 
 class TestBVGXML:
