@@ -3,7 +3,7 @@
 Generator: DataclassGenerator
 See: https://xsdata.readthedocs.io/
 """
-from eflips.ingest.xmldata.bvg_xml import (
+from eflips.ingest.legacy.xmldata.bvg_xml import (
     ErgebnisReturnCode,
     FahrtFahrgastrelevant,
     Linienfahrplan,

@@ -26,11 +26,11 @@ from tqdm.auto import tqdm
 from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.ingest.util
-from eflips.ingest.util import soldner_to_pointz
-from eflips.ingest.xmldata import (
+from eflips.ingest.legacy.xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
+from eflips.ingest.util import soldner_to_pointz
 
 
 def load_and_validate_xml(filename: Path) -> Linienfahrplan:
@@ -57,7 +57,7 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     xml_string = xml_string.replace("ns2:", "")
     xml_string = xml_string.replace(":ns2", "")
 
-    xsd_path = Path(__file__).parent.parent.parent / "data" / "bvg_xml.xsd"
+    xsd_path = Path(__file__).parent.parent.parent.parent / "data" / "bvg_xml.xsd"
     xmlschema_doc = etree.parse(xsd_path)
     xmlschema = etree.XMLSchema(xmlschema_doc)
 
