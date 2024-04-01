@@ -8,6 +8,10 @@ from pyproj import Transformer
 
 import eflips.ingest
 
+"""
+Some utility functions for the ingest module.
+"""
+
 # The transformer is initialized here, so that it is only initialized once
 transformer = Transformer.from_crs("EPSG:3068", "EPSG:4326")
 
