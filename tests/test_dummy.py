@@ -12,13 +12,18 @@ from tests.base import BaseIngester
 
 
 class TestDummyIngester(BaseIngester):
-    def test_prepare(self, ingester) -> None:
+    def test_prepare(self, ingester, tmp_path) -> None:
         name = "Entenhausen"
         depot_count = 5
         line_count = 3
         rotation_per_line = 4
         opportunity_charging = True
         bus_type = BusType.ARTICULATED
+
+        # Create the random text file needed to test file ingestion
+        random_text = "This is a random text file."
+        with open(tmp_path / "random.txt", "w") as f:
+            f.write(random_text)
 
         # This case should work
         ret_val = ingester.prepare(
@@ -29,6 +34,7 @@ class TestDummyIngester(BaseIngester):
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
             progress_callback=self.progress_callback,
+            random_text_file=tmp_path / "random.txt",
         )
 
         result: bool = ret_val[0]
@@ -38,13 +44,18 @@ class TestDummyIngester(BaseIngester):
         uuid: UUID | Dict[str, str] = ret_val[1]
         assert isinstance(uuid, UUID)
 
-    def test_prepare_incorrect(self, ingester) -> None:
+    def test_prepare_incorrect(self, ingester, tmp_path) -> None:
         name = "Entenhausen"
         depot_count = 5
         line_count = 3
         rotation_per_line = 4
         opportunity_charging = True
         bus_type = BusType.ARTICULATED
+
+        # Create the random text file needed to test file ingestion
+        random_text = "This is a random text file."
+        with open(tmp_path / "random.txt", "w") as f:
+            f.write(random_text)
 
         # This case should fail
         ret_val = ingester.prepare(
@@ -55,6 +66,7 @@ class TestDummyIngester(BaseIngester):
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
             progress_callback=self.progress_callback,
+            random_text_file=tmp_path / "random.txt",
         )
         result = ret_val[0]
         assert isinstance(result, bool)
@@ -70,13 +82,18 @@ class TestDummyIngester(BaseIngester):
     def progress_callback(progress: float) -> None:
         assert 0 <= progress <= 1
 
-    def test_ingest(self, ingester) -> None:
+    def test_ingest(self, ingester, tmp_path) -> None:
         name = "Entenhausen"
         depot_count = 5
         line_count = 3
         rotation_per_line = 4
         opportunity_charging = True
         bus_type = BusType.ARTICULATED
+
+        # Create the random text file needed to test file ingestion
+        random_text = "This is a random text file."
+        with open(tmp_path / "random.txt", "w") as f:
+            f.write(random_text)
 
         # This case should work
         ret_val = ingester.prepare(
@@ -87,6 +104,7 @@ class TestDummyIngester(BaseIngester):
             opportunity_charging=opportunity_charging,
             bus_type=bus_type,
             progress_callback=self.progress_callback,
+            random_text_file=tmp_path / "random.txt",
         )
 
         assert ret_val[0] is True
@@ -98,7 +116,7 @@ class TestDummyIngester(BaseIngester):
         ingester = DummyIngester(self.database_url)
         ingester.ingest(uuid)
 
-    def test_ingest_existing_scenario(self, ingester) -> None:
+    def test_ingest_existing_scenario(self, ingester, tmp_path) -> None:
         engine = create_engine(ingester.database_url)
         with Session(engine) as session:
             scenario = Scenario(
@@ -112,6 +130,11 @@ class TestDummyIngester(BaseIngester):
             opportunity_charging = True
             bus_type = BusType.ARTICULATED
 
+            # Create the random text file needed to test file ingestion
+            random_text = "This is a random text file."
+            with open(tmp_path / "random.txt", "w") as f:
+                f.write(random_text)
+
             # This case should work
             ret_val = ingester.prepare(
                 name=name,
@@ -121,6 +144,7 @@ class TestDummyIngester(BaseIngester):
                 opportunity_charging=opportunity_charging,
                 bus_type=bus_type,
                 progress_callback=self.progress_callback,
+                random_text_file=tmp_path / "random.txt",
             )
 
             assert ret_val[0] is True

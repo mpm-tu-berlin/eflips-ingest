@@ -81,9 +81,9 @@ class AbstractIngester(ABC):
         """
         pass
 
-    @property
+    @classmethod
     @abstractmethod
-    def prepare_param_names(self) -> Dict[str, str | Dict[Enum, str]]:
+    def prepare_param_names(cls) -> Dict[str, str | Dict[Enum, str]]:
         """
         A dictionary containing the parameter names for :meth:`prepare`.
 
@@ -97,9 +97,9 @@ class AbstractIngester(ABC):
         """
         pass
 
-    @property
+    @classmethod
     @abstractmethod
-    def prepare_param_description(self) -> Dict[str, str | Dict[Enum, str]]:
+    def prepare_param_description(cls) -> Dict[str, str | Dict[Enum, str]]:
         """
         A dictionary containing the parameter descriptions for :meth:`prepare`.
 
