@@ -14,8 +14,7 @@ class AbstractIngester(ABC):
 
         :param database_url: A string representing the URL of the database to ingest into. Must be of the form
                              postgresql://user:password@host:port/database. An url of the format
-                             postgis://user:password@host:port/database (django style) will be converted to the
-                             appropriate format.
+                             postgis://user:password@host:port/database (django style) will be converted to the4
         :return: None
         """
         if database_url.startswith("postgis://"):
@@ -73,6 +72,9 @@ class AbstractIngester(ABC):
 
         This method must call the progress_callback function periodically to update the progress of the ingestion
         process. The progress_callback function should accept a float value between 0 and 1.
+
+        The method should check if a scenario with the same UUID already exists in the database. If it does, it should
+        add the data to the existing scenario. If it does not, it should create a new scenario.
 
         :param uuid: A UUID representing the data to ingest.
         :return: Nothing. If unexpected errors occur, they should be raised as exceptions.

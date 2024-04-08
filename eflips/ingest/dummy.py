@@ -166,10 +166,14 @@ class DummyIngester(AbstractIngester):
         engine = create_engine(self.database_url)
 
         with Session(engine) as session:
-            scenario = Scenario(
-                name=params.name,
-            )
-            session.add(scenario)
+            scenario_or_none = session.query(Scenario).filter(Scenario.task_id == uuid).one_or_none()
+            if scenario_or_none:
+                scenario = scenario_or_none
+            else:
+                scenario = Scenario(
+                    name=params.name,
+                )
+                session.add(scenario)
 
             self._create_vehicle_types(scenario, session, params.bus_type)
             session.flush()  # To put the vehicle types into the database
