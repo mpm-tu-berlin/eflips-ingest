@@ -3,6 +3,7 @@ import pickle
 from dataclasses import dataclass
 from datetime import timedelta, datetime
 from enum import Enum
+from pathlib import Path
 from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
 
@@ -100,6 +101,7 @@ class DummyIngester(AbstractIngester):
         rotation_per_line: int,
         opportunity_charging: bool,
         bus_type: BusType,
+        random_text_file: Path,
         progress_callback: None | Callable[[float], None] = None,
     ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
@@ -130,6 +132,8 @@ class DummyIngester(AbstractIngester):
             errors["Wrong Opportunity Charging"] = "Opportunity charging must be a boolean."
         if not isinstance(bus_type, BusType):
             errors["Wrong Bus Type"] = "Bus type must be a valid bus type."
+        if not random_text_file.name.endswith(".txt"):
+            errors["Wrong Random Text File"] = "Random text file must end in .txt."
 
         if errors:
             return False, errors
@@ -137,6 +141,7 @@ class DummyIngester(AbstractIngester):
             uuid = uuid4()
             temp_dir = self.path_for_uuid(uuid)
             temp_dir.mkdir(parents=True, exist_ok=False)
+            os.rename(random_text_file, temp_dir / random_text_file.name)
 
             data = PrepareOptions(
                 name=name,
@@ -192,7 +197,7 @@ class DummyIngester(AbstractIngester):
 
             session.commit()
 
-    @property
+    @classmethod
     def prepare_param_names(self) -> Dict[str, str | Dict[Enum, str]]:
         return {
             "name": "Name",
@@ -205,9 +210,10 @@ class DummyIngester(AbstractIngester):
                 BusType.DOUBLE_DECKER: "Double Decker",
                 BusType.ARTICULATED: "Articulated",
             },
+            "random_text_file": "Random Text File",
         }
 
-    @property
+    @classmethod
     def prepare_param_description(self) -> Dict[str, str | Dict[Enum, str]]:
         return {
             "name": "The name of the scenario.",
@@ -220,6 +226,7 @@ class DummyIngester(AbstractIngester):
                 BusType.DOUBLE_DECKER: "Double Decker",
                 BusType.ARTICULATED: "Articulated",
             },
+            "random_text_file": "A random text file that is not used for anything. Must end in .txt.",
         }
 
     def _create_depot(self, scenario: Scenario, session: sqlalchemy.orm.Session, i: int) -> Depot:

@@ -114,13 +114,13 @@ class BaseIngester(ABC):
         for param in sig.parameters.values():
             if param.name == "progress_callback":
                 continue
-            assert param.name in ingester.prepare_param_names.keys()
+            assert param.name in ingester.prepare_param_names().keys()
             if issubclass(param.annotation, Enum):
-                assert isinstance(ingester.prepare_param_names[param.name], dict)
+                assert isinstance(ingester.prepare_param_names()[param.name], dict)
                 for value in param.annotation:
-                    assert value in ingester.prepare_param_names[param.name].keys()
+                    assert value in ingester.prepare_param_names()[param.name].keys()
             else:
-                assert isinstance(ingester.prepare_param_names[param.name], str)
+                assert isinstance(ingester.prepare_param_names()[param.name], str)
 
     def test_prepare_param_description(self, ingester) -> None:
         """
@@ -135,10 +135,10 @@ class BaseIngester(ABC):
         for param in sig.parameters.values():
             if param.name == "progress_callback":
                 continue
-            assert param.name in ingester.prepare_param_description.keys()
+            assert param.name in ingester.prepare_param_description().keys()
             if issubclass(param.annotation, Enum):
-                assert isinstance(ingester.prepare_param_description[param.name], dict)
+                assert isinstance(ingester.prepare_param_description()[param.name], dict)
                 for value in param.annotation:
-                    assert value in ingester.prepare_param_description[param.name].keys()
+                    assert value in ingester.prepare_param_description()[param.name].keys()
             else:
-                assert isinstance(ingester.prepare_param_description[param.name], str)
+                assert isinstance(ingester.prepare_param_description()[param.name], str)
