@@ -123,4 +123,4 @@ class AbstractIngester(ABC):
         :return: A Path object representing the path for the given UUID.
         """
         temp_dir = tempfile.gettempdir()
-        return Path(os.path.join(temp_dir, f"{uuid}.json"))
+        return Path(os.path.join(temp_dir, f"{uuid}"))
