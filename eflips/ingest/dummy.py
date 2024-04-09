@@ -165,6 +165,10 @@ class DummyIngester(AbstractIngester):
         if not os.path.exists(self.path_for_uuid(uuid) / "data.pkl"):
             raise ValueError("Data file does not exist.")
 
+        # Also check that there is one file ending in .txt
+        if not any(p.name.endswith(".txt") for p in self.path_for_uuid(uuid).iterdir()):
+            raise ValueError("No text file found.")
+
         with open(self.path_for_uuid(uuid) / "data.pkl", "rb") as f:
             params = pickle.load(f)
         assert isinstance(params, PrepareOptions)
