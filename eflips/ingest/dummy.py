@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
 
+import shutil
 import sqlalchemy
 from eflips.model.depot import Depot, AssocPlanProcess, Process, Area, Plan, AreaType
 from eflips.model.general import Scenario, VehicleType
@@ -141,7 +142,7 @@ class DummyIngester(AbstractIngester):
             uuid = uuid4()
             temp_dir = self.path_for_uuid(uuid)
             temp_dir.mkdir(parents=True, exist_ok=False)
-            os.rename(random_text_file, temp_dir / random_text_file.name)
+            shutil.move(random_text_file, temp_dir / random_text_file.name)
 
             data = PrepareOptions(
                 name=name,
@@ -163,6 +164,10 @@ class DummyIngester(AbstractIngester):
     def ingest(self, uuid: UUID, progress_callback: None | Callable[[float], None] = None) -> None:
         if not os.path.exists(self.path_for_uuid(uuid) / "data.pkl"):
             raise ValueError("Data file does not exist.")
+
+        # Also check that there is one file ending in .txt
+        if not any(p.name.endswith(".txt") for p in self.path_for_uuid(uuid).iterdir()):
+            raise ValueError("No text file found.")
 
         with open(self.path_for_uuid(uuid) / "data.pkl", "rb") as f:
             params = pickle.load(f)
