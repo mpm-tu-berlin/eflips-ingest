@@ -58,7 +58,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     # (and return an error if it is not ASCII or ISO8859-1).
     logger = logging.getLogger(__name__)
 
-    table_name = None
+    table_name_str = None
     character_set = None
 
     valid_character_sets = ["ASCII", "ISO8859-1", "ISO-8859-1"]
@@ -80,7 +80,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
 
                 if command == "tbl":
                     # Get the table name (e.g. 'MENGE_BASIS_VERSIONEN')
-                    table_name = parts[1].upper().strip()
+                    table_name_str = parts[1].upper().strip()
 
                 elif command == "chs":
                     # Get the character set used in the file
@@ -95,13 +95,13 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
                         )
 
                 elif command == "rec":
-                    if table_name is not None and character_set is not None:
+                    if table_name_str is not None and character_set is not None:
                         # We have all necessary information (and it contains at least one record)
                         break
 
                 elif command == "eof":
                     # We reached the end of the file without seeing any records
-                    raise ValueError("The file", abs_file_path, " does not contain any records.")
+                    raise ValueError("The file" + str(abs_file_path) + " does not contain any records.")
 
     except UnicodeDecodeError as e:
         e.add_note(
@@ -112,7 +112,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
         raise e
 
     # Raise an error if table name or encoding is not found
-    if table_name is None:
+    if table_name_str is None:
         msg = f"The file {abs_file_path} does not contain a table name in the header."
         logger.info(msg)
         raise ValueError(msg)
@@ -121,10 +121,10 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
         logger.info(msg)
         raise ValueError(msg)
 
-    if table_name not in [x.value for x in VDV_Table_Name]:
-        raise ValueError("The file", abs_file_path, " contains an unknown table name: ", table_name, " Skipping it.")
+    if table_name_str not in [x.value for x in VDV_Table_Name]:
+        raise ValueError("The file" + str(abs_file_path) + " contains an unknown table name: " + table_name_str + " Skipping it.")
 
-    return EingangsdatenTabelle(abs_file_path=abs_file_path, character_set=character_set, table_name=table_name)
+    return EingangsdatenTabelle(abs_file_path=abs_file_path, character_set=character_set, table_name=VDV_Table_Name[table_name_str])
 
 
 def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[VDV_Table_Name, EingangsdatenTabelle]:
@@ -137,11 +137,14 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     logger = logging.getLogger(__name__)
 
     # Create a Pattern to find all .x10 Files in this directory
+    # in macOS (unlike windows) searching for *.x10 wiles will NOT find files with the extension .X10.
+    # Therefore, we need to search for both, but also filter out the duplicates later as we would otherwise have duplicates in windows
     search_pattern_lowercase = os.path.join(abs_path_to_folder_with_vdv_files, "*.x10")
     search_pattern_uppercase = os.path.join(abs_path_to_folder_with_vdv_files, "*.X10")
 
     # Find all files that match this pattern.
     x10_files = glob.glob(search_pattern_lowercase) + glob.glob(search_pattern_uppercase)
+    x10_files_unique = list(set(x10_files))
 
     # Iterate through the files, checking whether the neccessary tables are present
 
@@ -150,14 +153,14 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     # check the contents of each file to determine to which table it belongs.
 
     all_tables: dict[VDV_Table_Name, EingangsdatenTabelle] = {}
-    for abs_file_path in x10_files:
+    for abs_file_path in x10_files_unique:
         try:
             eingangsdatentable: EingangsdatenTabelle = check_vdv451_file_header(abs_file_path)
 
             # Check if the table name is already present in the dictionary (would mean duplicate, two times the same table in the files)
             if eingangsdatentable.table_name in all_tables.keys():
                 raise ValueError(
-                    "The table ", eingangsdatentable.table_name, " is present in multiple files. Aborting."
+                    "The table " + eingangsdatentable.table_name.value + " is present in multiple files. Aborting."
                 )
 
             else:
@@ -217,37 +220,37 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
 
     # fahrzeug waere optional, aber machen wir nicht?
     required_tables = [
-        "BASIS_VER_GUELTIGKEIT",
-        "FIRMENKALENDER",
-        "REC_ORT",
-        "MENGE_FZG_TYP",
-        "REC_SEL",
-        "SEL_FZT_FELD",
-        "LID_VERLAUF",
-        "REC_FRT",
-        "REC_UMLAUF",
-        "REC_LID",  # hmm
+        VDV_Table_Name.BASIS_VER_GUELTIGKEIT,
+        VDV_Table_Name.FIRMENKALENDER,
+        VDV_Table_Name.REC_ORT,
+        VDV_Table_Name.MENGE_FZG_TYP,
+        VDV_Table_Name.REC_SEL,
+        VDV_Table_Name.SEL_FZT_FELD,
+        VDV_Table_Name.LID_VERLAUF,
+        VDV_Table_Name.REC_FRT,
+        VDV_Table_Name.REC_UMLAUF,
+        VDV_Table_Name.REC_LID,  # hmm
     ]
 
     if not set(required_tables) <= set(all_tables.keys()):
         # Compute all tables that are required but not in the tables in the files, to display them to the user
         missing_tables = set(required_tables) - set(all_tables.keys())
-        missing_tables_str = " ".join([x + ", " for x in missing_tables])
+        missing_tables_str = " ".join([x.value + ", " for x in missing_tables])
         raise ValueError(
-            "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: ",
-            missing_tables_str,
+            "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: " +
+            missing_tables_str +
             " Aborting.",
         )
 
     # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
 
-    if ("REC_FRT_HZT" in all_tables.keys()) and ("ORT_HZTF" in all_tables.keys()):
+    if (VDV_Table_Name.REC_FRT_HZT in all_tables.keys()) and (VDV_Table_Name.ORT_HZTF in all_tables.keys()):
         # Both tables present...
         raise ValueError(
             "Either REC_FRT_HZT or ORT_HZTF must be present in the dataset, but both are present. Aborting."
         )
 
-    if ("REC_FRT_HZT" not in all_tables.keys()) and ("ORT_HZTF" not in all_tables.keys()):
+    if (VDV_Table_Name.REC_FRT_HZT not in all_tables.keys()) and (VDV_Table_Name.ORT_HZTF not in all_tables.keys()):
         # Gar keine Haltezeiten dabei
         raise ValueError("Neither REC_FRT_HZT nor ORT_HZTF present in the directory. Aborting.")
 
