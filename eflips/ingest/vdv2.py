@@ -3,6 +3,8 @@ import os
 import csv
 import enum
 from dataclasses import dataclass
+from typing import Dict
+
 
 class VDV_Table_Name(enum.Enum):
     MENGE_BASIS_VERSIONEN = "MENGE_BASIS_VERSIONEN"
@@ -127,6 +129,8 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
                             + " does not match 'ASCII' or 'ISO8859-1'.",
                         )
 
+                # TODO: wenn tbl; kommt, evtl. Zeilennummer merken & direkt abbrechen
+
     except UnicodeDecodeError:
         print(
             "The header of the file",
@@ -155,7 +159,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     return EingangsdatenTabelle(abs_file_path=abs_file_path, character_set=character_set, table_name=table_name)
 
 
-def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> None:
+def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[VDV_Table_Name, EingangsdatenTabelle]:
     """
     Checks if the given directory contains all necessary .x10 files (necessary as in VDV 451/452 specified)
     and xxx.
@@ -175,7 +179,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> None:
     # see VDV 451 Chapter 3.1 and 3.2. However, as the name of the table is also included in the file contents, we instead
     # check the contents of each file to determine to which table it belongs.
 
-    all_tables = {}
+    all_tables: dict[VDV_Table_Name, EingangsdatenTabelle] = {}
     for abs_file_path in x10_files:
         try:
             eingangsdatentable: EingangsdatenTabelle = check_vdv451_file_header(abs_file_path)
@@ -258,13 +262,10 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> None:
         "LID_VERLAUF",
         "REC_FRT",
         "REC_UMLAUF",
-        "REC_FRT_HZT", # hmm
-        "ORT_HZTF", # hmm
         "REC_LID", # hmm
 
     ]
 
-    # todo ist evtl REC_FRT_HZT oder ORT_HZTF optional?
 
     if not set(required_tables) <= set(all_tables.keys()):
         # Compute all tables that are required but not in the tables in the files, to display them to the user
@@ -276,19 +277,25 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> None:
             " Aborting.",
         )
 
+    # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
+
+    if ('REC_FRT_HZT' in all_tables.keys()) and ('ORT_HZTF' in all_tables.keys()):
+        # Both tables present...
+        raise ValueError("Either REC_FRT_HZT or ORT_HZTF must be present in the dataset, but both are present. Aborting.")
+
+    if ('REC_FRT_HZT' not in all_tables.keys()) and ('ORT_HZTF' not in all_tables.keys()):
+        # Gar keine Haltezeiten dabei
+        raise ValueError("Neither REC_FRT_HZT nor ORT_HZTF present in the directory. Aborting.")
+
     print("All necessary tables are present in the directory.")
+    return all_tables
 
 
 if __name__ == "__main__":
     # TODO UVG example geht NICHT, weil bereits dort 'ISO-8859-1' steht statt 'ISO8859-1'
-    validate_input_data_vdv_451("C:\\Users\\Studium\\PycharmProjects\\eflips-ingest\\eflips\\ingest\\Vogtland")
+    all_tables = validate_input_data_vdv_451("C:\\Users\\Studium\\PycharmProjects\\eflips-ingest\\eflips\\ingest\\Vogtland")
 
-    # table_name, df = import_vdv451_file(abs_file_path)  # Process the .x10 file, turning it into a dataframe
-    # all_tables[table_name] = df
-    # print("Parsed file ", abs_file_path)
 
-    # print("Done parsing all files.")
-    # return all_tables
 
 
 def stuff(a: int) -> int:
