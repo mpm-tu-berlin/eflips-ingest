@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from eflips.ingest.vdv2 import check_vdv451_file_header, EingangsdatenTabelle
+from eflips.ingest.vdv2 import check_vdv451_file_header, EingangsdatenTabelle, validate_input_data_vdv_451
 
 
 def abspath_to_testfile(testfile_name: str) -> Path:
@@ -50,6 +50,19 @@ def test_completely_different_content():
     absolute_path = abspath_to_testfile("komplett_anderer_inhalt.X10")
     with pytest.raises(ValueError):
         check_vdv451_file_header(absolute_path)
+
+
+def test_load_for_sample_data() -> None:
+    """
+    Take the sample data from the PROJECT_ROOT/samples/VDV subfolders and test the load function.
+    :return: None
+    """
+    path_of_this_file = Path(os.path.dirname(__file__))
+    sample_data_directory = path_of_this_file / ".." / "samples" / "VDV"
+
+    for directory in sample_data_directory.iterdir():
+        if directory.is_dir():
+            validate_input_data_vdv_451(directory)
 
 
 # todo für die anderen Tests ergänzen.
