@@ -1,9 +1,8 @@
-import glob
-import os
 import csv
 import enum
+import glob
+import os
 from dataclasses import dataclass
-from typing import Dict
 
 
 class VDV_Table_Name(enum.Enum):
@@ -94,7 +93,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     table_name = None
     character_set = None
 
-    valid_character_sets = ["ASCII", "ISO8859-1"]
+    valid_character_sets = ["ASCII", "ISO8859-1", "ISO-8859-1"]
 
     try:
         with open(
@@ -129,12 +128,21 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
                             + " does not match 'ASCII' or 'ISO8859-1'.",
                         )
 
-                # TODO: wenn tbl; kommt, evtl. Zeilennummer merken & direkt abbrechen
+                elif command == "rec":
+                    if table_name is not None and character_set is not None:
+                        # We have all necessary information (and it contains at least one record)
+                        break
+
+                elif command == "eof":
+                    # We reached the end of the file without seeing any records
+                    raise ValueError("The file", abs_file_path, " does not contain any records.")
 
     except UnicodeDecodeError as e:
-        e.add_note("The header of the file",
-            abs_file_path,
-            " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",)
+        e.add_note(
+            "The header of the file"
+            + str(abs_file_path)
+            + " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",
+        )
         raise e
 
     # Raise an error if table name or encoding is not found
@@ -162,10 +170,11 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     """
 
     # Create a Pattern to find all .x10 Files in this directory
-    search_pattern = os.path.join(abs_path_to_folder_with_vdv_files, "*.x10")
+    search_pattern_lowercase = os.path.join(abs_path_to_folder_with_vdv_files, "*.x10")
+    search_pattern_uppercase = os.path.join(abs_path_to_folder_with_vdv_files, "*.X10")
 
     # Find all files that match this pattern.
-    x10_files = glob.glob(search_pattern)
+    x10_files = glob.glob(search_pattern_lowercase) + glob.glob(search_pattern_uppercase)
 
     # Iterate through the files, checking whether the neccessary tables are present
 
@@ -188,9 +197,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
                 all_tables[eingangsdatentable.table_name] = eingangsdatentable
 
         except (ValueError, UnicodeDecodeError) as e:
-            print(
-                "While processing ", abs_file_path, " the following exception occurred:", e
-            )  # todo aufsplitten.. ?!
+            print("While processing ", abs_file_path, " the following exception occurred:", e)  # todo aufsplitten.. ?!
             continue
 
     # Now check if we have all necessary tables
@@ -256,28 +263,28 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
         "LID_VERLAUF",
         "REC_FRT",
         "REC_UMLAUF",
-        "REC_LID", # hmm
-
+        "REC_LID",  # hmm
     ]
-
 
     if not set(required_tables) <= set(all_tables.keys()):
         # Compute all tables that are required but not in the tables in the files, to display them to the user
         missing_tables = set(required_tables) - set(all_tables.keys())
         missing_tables_str = " ".join([x + ", " for x in missing_tables])
         raise ValueError(
-            "Not all necessary tables are present in the directory. Missing tables are: ",
+            "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: ",
             missing_tables_str,
             " Aborting.",
         )
 
     # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
 
-    if ('REC_FRT_HZT' in all_tables.keys()) and ('ORT_HZTF' in all_tables.keys()):
+    if ("REC_FRT_HZT" in all_tables.keys()) and ("ORT_HZTF" in all_tables.keys()):
         # Both tables present...
-        raise ValueError("Either REC_FRT_HZT or ORT_HZTF must be present in the dataset, but both are present. Aborting.")
+        raise ValueError(
+            "Either REC_FRT_HZT or ORT_HZTF must be present in the dataset, but both are present. Aborting."
+        )
 
-    if ('REC_FRT_HZT' not in all_tables.keys()) and ('ORT_HZTF' not in all_tables.keys()):
+    if ("REC_FRT_HZT" not in all_tables.keys()) and ("ORT_HZTF" not in all_tables.keys()):
         # Gar keine Haltezeiten dabei
         raise ValueError("Neither REC_FRT_HZT nor ORT_HZTF present in the directory. Aborting.")
 
