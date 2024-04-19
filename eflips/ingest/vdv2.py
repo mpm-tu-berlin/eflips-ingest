@@ -1,6 +1,7 @@
 import csv
 import enum
 import glob
+import logging
 import os
 from dataclasses import dataclass
 
@@ -55,6 +56,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     # For VDV 451, either ASCII or ISO8859-1 is allowed as encoding for the table datasets. However, the header is always ASCII (see Ch. 4.1 of VDV 451).
     # Therefore, we open the file with ISO8859-1
     # (and return an error if it is not ASCII or ISO8859-1).
+    logger = logging.getLogger(__name__)
 
     table_name = None
     character_set = None
@@ -111,11 +113,13 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
 
     # Raise an error if table name or encoding is not found
     if table_name is None:
-        print("The file", abs_file_path, " does not contain a table name in the header.")
-        raise ValueError("The file", abs_file_path, " does not contain a table name in the header.")
+        msg = f"The file {abs_file_path} does not contain a table name in the header."
+        logger.info(msg)
+        raise ValueError(msg)
     if character_set is None:
-        print("The file", abs_file_path, " does not contain a character set in the header.")
-        raise ValueError("The file", abs_file_path, " does not contain a character set in the header.")
+        msg = f"The file {abs_file_path} does not contain a character set in the header."
+        logger.info(msg)
+        raise ValueError(msg)
 
     if table_name not in [x.value for x in VDV_Table_Name]:
         raise ValueError("The file", abs_file_path, " contains an unknown table name: ", table_name, " Skipping it.")
@@ -130,6 +134,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     :param abs_path_to_folder_with_vdv_files: The ABSOLUTE path to the directory containing the VDV 451 files
     :return: TBC TODO
     """
+    logger = logging.getLogger(__name__)
 
     # Create a Pattern to find all .x10 Files in this directory
     search_pattern_lowercase = os.path.join(abs_path_to_folder_with_vdv_files, "*.x10")
@@ -159,7 +164,8 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
                 all_tables[eingangsdatentable.table_name] = eingangsdatentable
 
         except (ValueError, UnicodeDecodeError) as e:
-            print("While processing ", abs_file_path, " the following exception occurred:", e)
+            msg = "While processing " + abs_file_path + " the following exception occurred: "
+            logger.warning(msg, exc_info=e)
             continue
 
     # Required Tables:
@@ -245,7 +251,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
         # Gar keine Haltezeiten dabei
         raise ValueError("Neither REC_FRT_HZT nor ORT_HZTF present in the directory. Aborting.")
 
-    print("All necessary tables are present in the directory.")
+    logger.info("All necessary tables are present in the directory.")
     return all_tables
 
 
