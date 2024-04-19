@@ -36,40 +36,6 @@ class VDV_Table_Name(enum.Enum):
     REC_UMLAUF = "REC_UMLAUF"
 
 
-# TODO problem mit den enum ansatz war, dass ich nicht mehr prüfen kann, ob eine Tabelle überhaupt in diesem Enum ist, weil ich nicht auf etwas zugreifen kann, was es nicht gibt (per key), außerdem inconvenient.
-
-# VDV_Table_Names = [
-#     "MENGE_BASIS_VERSIONEN",
-#     "BASIS_VER_GUELTIGKEIT",
-#     "FIRMENKALENDER",
-#     "MENGE_TAGESART",
-#     "MENGE_ONR_TYP",
-#     "MENGE_ORT_TYP",
-#     "REC_HP",
-#     "REC_OM",
-#     "REC_ORT",
-#     "FAHRZEUG",
-#     "ZUL_VERKEHRSBETRIEB",
-#     "MENGE_BEREICH",
-#     "MENGE_FZG_TYP",
-#     "REC_ANR",
-#     "REC_ZNR",
-#     "REC_SEL",
-#     "REC_SEL_ZP",
-#     "MENGE_FGR",
-#     "ORT_HZTF",
-#     "SEL_FZT_FELD",
-#     "REC_UEB",
-#     "UEB_FZT",
-#     "MENGE_FAHRTART",
-#     "LID_VERLAUF",
-#     "REC_LID",
-#     "REC_FRT",
-#     "REC_FRT_HZT",
-#     "REC_UMLAUF",
-# ]
-
-
 @dataclass
 class EingangsdatenTabelle:
     abs_file_path: str
@@ -87,7 +53,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
 
     # 1. Open file and recognize the encoding
     # For VDV 451, either ASCII or ISO8859-1 is allowed as encoding for the table datasets. However, the header is always ASCII (see Ch. 4.1 of VDV 451).
-    # Therefore, we open the file with ASCII TODO ja?!? encoding and check which of the two encodings is used for the table datasets
+    # Therefore, we open the file with ISO8859-1
     # (and return an error if it is not ASCII or ISO8859-1).
 
     table_name = None
@@ -96,9 +62,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     valid_character_sets = ["ASCII", "ISO8859-1", "ISO-8859-1"]
 
     try:
-        with open(
-            abs_file_path, "r", encoding="ISO8859-1"
-        ) as f:  # TODO @Besprechen mit LH Eigentlich ASCII- problem: die Unicode Decoding Error soll eig. nur kommen, wenn im HEADER was non ascii steht, aber wie krieg ich das bitte raus.
+        with open(abs_file_path, "r", encoding="ISO8859-1") as f:
             for line in f:
                 if line.strip().split(";")[0] == "chs":
                     # For these modes, we need to utilize the CSV reader here in order to get rid of the double quote marks enclosing the strings (otherwise, we would have e.g. '"Templin, ZOB"') etc.
@@ -154,10 +118,8 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
         raise ValueError("The file", abs_file_path, " does not contain a character set in the header.")
 
     if table_name not in [x.value for x in VDV_Table_Name]:
-        # todo erstmal valueEror fuer alles - wir können überlegen, ob wir danach nur alle syntaktisch korrekten "Tables" weiterverarbeiten oder ob wir die gültigen, aber
         raise ValueError("The file", abs_file_path, " contains an unknown table name: ", table_name, " Skipping it.")
 
-    # TODO @LH der header ist tatsächlich immer ASCII. Deswegen muss ich kein "erneut öffnen" machen,
     return EingangsdatenTabelle(abs_file_path=abs_file_path, character_set=character_set, table_name=table_name)
 
 
@@ -197,14 +159,8 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
                 all_tables[eingangsdatentable.table_name] = eingangsdatentable
 
         except (ValueError, UnicodeDecodeError) as e:
-            print("While processing ", abs_file_path, " the following exception occurred:", e)  # todo aufsplitten.. ?!
+            print("While processing ", abs_file_path, " the following exception occurred:", e)
             continue
-
-    # Now check if we have all necessary tables
-    # @Besprechen mit LH TODO beschraenken wir uns auf die Tables, die wie für unser eflips brauchen, oder ALLE, die gem. VDV451 notwendig sind?
-    # Weil das PRoblem ist, angeblich ist ein VDV Datensatz bspw. auch ohne Umlauf grundsätzlich zulässig (S.67 der VDV 452 doku ganz unten)
-
-    # required_tables = [x for x in VDV_Table_Names] # todo erstmal ALLE notwendig, schmeissen sie gleich raus
 
     # Required Tables:
     # BASIS_VER_GUELTIGKEIT: Nötig, um herauszufinden welches die aktuell gültige Version ist (kein Handling, falls nicht existent und trz nur 1 Version existiert)
@@ -229,7 +185,8 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     # REC_LID: Linienvarianten. Ich würde sagen schon nötig, wegen der Linienbezeichnung; aber theoretisch könnte es ggfs. weggelassen werden (?) und mit dem PK gearbeitet werden
     # EINZELANSCHLUSS: für Anschlussdefinition, glaube mir machen keine Umstiege in eflips?
     # REC_UMS: Umsteigezeiten für Anschlusssicherung.
-    # TODO: was machen wir mit den 14 E-Mobilitäts Tabellen aus der VDV (Kapitel 11.6 - 11.14)
+
+    # Später behandeln: 14 E-Mobilitäts Tabellen aus der VDV (Kapitel 11.6 - 11.14)
 
     # egal:
     # MENGE_BASIS_VERSIONEN: eigentlich nur für Textuelle Beschreibung der Basisversion nötig
@@ -252,7 +209,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
     # SEL_FZT_FELD_ZP: Fahrzeit für Zwischenpunkte. SOLLTE egal sein. todo kann es möglich sein, dass nur diese Zwischenpunkte angegeben sind oder so?!?!
     # MENGE_FAHRTART: Textuelle Beschreibung der Fahrtarten (z.B. Normalfahrt, Betriebshofausfahrt usw. siehe VDV 452 Kap. 9.6.8)
 
-    # fahrzeug waere optional, aber machen wir nicht? TODO @LH
+    # fahrzeug waere optional, aber machen wir nicht?
     required_tables = [
         "BASIS_VER_GUELTIGKEIT",
         "FIRMENKALENDER",
@@ -293,7 +250,6 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
 
 
 if __name__ == "__main__":
-    # TODO UVG example geht NICHT, weil bereits dort 'ISO-8859-1' steht statt 'ISO8859-1'
     path_to_this_file = os.path.dirname(os.path.abspath(__file__))
     sample_files_dir = os.path.join(path_to_this_file, "..", "..", "samples", "VDV", "Trier")
     all_tables = validate_input_data_vdv_451(sample_files_dir)
