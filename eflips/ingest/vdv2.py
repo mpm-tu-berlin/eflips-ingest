@@ -131,17 +131,11 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
 
                 # TODO: wenn tbl; kommt, evtl. Zeilennummer merken & direkt abbrechen
 
-    except UnicodeDecodeError:
-        print(
-            "The header of the file",
+    except UnicodeDecodeError as e:
+        e.add_note("The header of the file",
             abs_file_path,
-            " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",
-        )
-        raise ValueError(
-            "The header of the file",
-            abs_file_path,
-            " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",
-        )
+            " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",)
+        raise e
 
     # Raise an error if table name or encoding is not found
     if table_name is None:
@@ -193,9 +187,9 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
             else:
                 all_tables[eingangsdatentable.table_name] = eingangsdatentable
 
-        except ValueError:
+        except (ValueError, UnicodeDecodeError) as e:
             print(
-                "Skipping file ", abs_file_path, " due to either duplicate, malformatting or non-VDV451 table name"
+                "While processing ", abs_file_path, " the following exception occurred:", e
             )  # todo aufsplitten.. ?!
             continue
 
