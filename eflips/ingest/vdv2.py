@@ -294,16 +294,6 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
 
 if __name__ == "__main__":
     # TODO UVG example geht NICHT, weil bereits dort 'ISO-8859-1' steht statt 'ISO8859-1'
-    all_tables = validate_input_data_vdv_451("C:\\Users\\Studium\\PycharmProjects\\eflips-ingest\\eflips\\ingest\\Vogtland")
-
-
-
-
-def stuff(a: int) -> int:
-    if a != 42:
-        raise ValueError("a must be 42")
-    return 42
-
-
-if __name__ == "__main__":
-    stuff(42)
+    path_to_this_file = os.path.dirname(os.path.abspath(__file__))
+    sample_files_dir = os.path.join(path_to_this_file, "..", "..", "samples", "VDV", "Trier")
+    all_tables = validate_input_data_vdv_451(sample_files_dir)
