@@ -122,9 +122,13 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
         raise ValueError(msg)
 
     if table_name_str not in [x.value for x in VDV_Table_Name]:
-        raise ValueError("The file" + str(abs_file_path) + " contains an unknown table name: " + table_name_str + " Skipping it.")
+        raise ValueError(
+            "The file" + str(abs_file_path) + " contains an unknown table name: " + table_name_str + " Skipping it."
+        )
 
-    return EingangsdatenTabelle(abs_file_path=abs_file_path, character_set=character_set, table_name=VDV_Table_Name[table_name_str])
+    return EingangsdatenTabelle(
+        abs_file_path=abs_file_path, character_set=character_set, table_name=VDV_Table_Name[table_name_str]
+    )
 
 
 def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[VDV_Table_Name, EingangsdatenTabelle]:
@@ -237,9 +241,9 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
         missing_tables = set(required_tables) - set(all_tables.keys())
         missing_tables_str = " ".join([x.value + ", " for x in missing_tables])
         raise ValueError(
-            "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: " +
-            missing_tables_str +
-            " Aborting.",
+            "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: "
+            + missing_tables_str
+            + " Aborting.",
         )
 
     # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
