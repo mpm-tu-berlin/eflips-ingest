@@ -294,6 +294,7 @@ def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
             # Avoid the program to crash if the datatype is invalid, but still log a warning
             # Sometimes, there are floats used for additional columns (columns not formally included the VDV 452 specification)
             dtypes.append(None)
+            #todo genauere angabe, in welcher Datei / Spalte es auftrat?
             msg = f"Invalid datatype formatting in VDV 451 file: {part} does not match 'char[n]' or 'num[n.0]'. Column will not be imported."
             logger.warning(msg)
             continue
@@ -378,7 +379,9 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> N
 
         # for this, we need to turn the JSON-like list into a JSON string
         list_of_the_parsed_objects = parser.from_string(json.dumps(json_list), List[corresponding_dataclass])
-        b = 0  # todo weg, nur als sprungmarke für debugging
+
+        return list_of_the_parsed_objects
+
 
     except UnicodeDecodeError as e:
         # todo specify more in detail where exactly the unicode error occurred?
@@ -467,9 +470,13 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
 
 if __name__ == "__main__":
     path_to_this_file = os.path.dirname(os.path.abspath(__file__))
-    sample_files_dir = os.path.join(path_to_this_file, "..", "..", "samples", "VDV", "Trier")
+    sample_files_dir = os.path.join(path_to_this_file, "UVG")
     all_tables = validate_input_data_vdv_451(sample_files_dir)
+
+    all_data = {}
 
     for tbl in all_tables:
         if tbl in VDV_Util.required_tables.keys():
-            import_vdv452_table_records(all_tables[tbl])
+            all_data[tbl] = import_vdv452_table_records(all_tables[tbl])
+
+    print("Done.")
