@@ -1,10 +1,19 @@
 import csv
 import enum
 import glob
+import json
 import logging
 import os
+import re
 from dataclasses import dataclass
-from vdv452data import vdv452_v1_5
+from vdv452data import (
+    vdv452_v1_5,
+)  # todo das geht nur beim direkten ausführen, aber in der eflips.ingest.legacy ebene kriege ich schwierigkeiten mit eflips.model
+
+
+import xsdata.formats.dataclass.parsers.json  # todo ist derzeit nur ne entwickler dependency(?)
+import xsdata.formats.dataclass.parsers.config  # todo AGAIN!!! s.a.
+from typing import List
 
 
 class VDV_Table_Name(enum.Enum):
@@ -36,6 +45,11 @@ class VDV_Table_Name(enum.Enum):
     REC_FRT = "REC_FRT"
     REC_FRT_HZT = "REC_FRT_HZT"
     REC_UMLAUF = "REC_UMLAUF"
+
+
+class VDV_Data_Type(enum.Enum):
+    CHAR = "char"
+    NUM = "num"
 
 
 class VDV_Util:
@@ -108,6 +122,8 @@ class EingangsdatenTabelle:
     abs_file_path: str
     character_set: str
     table_name: VDV_Table_Name
+    column_names_and_data_types: list[(str, (VDV_Data_Type | None))]  # None represents "other / invalid data type" here
+    # column_names: list[str]
 
 
 def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
@@ -126,6 +142,8 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
 
     table_name_str = None
     character_set = None
+    datatypes = None
+    column_names = None
 
     valid_character_sets = ["ASCII", "ISO8859-1"]
 
@@ -166,6 +184,25 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
                             + " does not match 'ASCII' or 'ISO8859-1'.",
                         )
 
+                elif command == "frm":
+                    # todo (also for charset) check for double entries of frm, chs, tbl, ..?
+                    # Get data formats of the columns (this will be something like ['num[9.0]', 'num[8.0]', 'char[40]', 'num[2.4]'])
+                    formats = parts[1:]
+
+                    try:
+                        datatypes = parse_datatypes(formats)
+                    except ValueError as e:
+                        e.add_note(
+                            "The file"
+                            + str(abs_file_path)
+                            + " contains invalid column data types. Please check the formatting of the data types in the file."
+                        )
+                        raise e
+
+                elif command == "atr":
+                    # Get the column names
+                    cx = parts[1:]
+                    column_names = [x.upper().strip() for x in cx]
                 elif command == "rec":
                     if table_name_str is not None and character_set is not None:
                         # We have all necessary information (and it contains at least one record)
@@ -193,14 +230,81 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
         logger.info(msg)
         raise ValueError(msg)
 
+    if datatypes is None:
+        msg = f"The file {abs_file_path} does not contain the data types of the columns in the header."
+        logger.info(msg)
+        raise ValueError(msg)
+
     if table_name_str not in [x.value for x in VDV_Table_Name]:
         raise ValueError(
             "The file" + str(abs_file_path) + " contains an unknown table name: " + table_name_str + " Skipping it."
         )
 
+    if column_names is None:
+        raise ValueError(
+            "The file"
+            + str(abs_file_path)
+            + " does not contain the column names in the header. Please check the file and try again."
+        )
+
+    if len(column_names) != len(datatypes):
+        raise ValueError(
+            "The file"
+            + str(abs_file_path)
+            + " contains an unequal number of column names and column data types in the header: "
+            + str(len(column_names))
+            + " column names, but "
+            + str(len(datatypes))
+            + " column data types."
+        )
+
     return EingangsdatenTabelle(
-        abs_file_path=abs_file_path, character_set=character_set, table_name=VDV_Table_Name[table_name_str]
+        abs_file_path=abs_file_path,
+        character_set=character_set,
+        table_name=VDV_Table_Name[table_name_str],
+        column_names_and_data_types=list(zip(column_names, datatypes)),
     )
+
+
+def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
+    """
+    Converts a list of datatype strings in VDV 451 format to a list of Python/Numpy datatypes
+    e.g., turn something like ['num[9.0]', 'char[40]', 'num[2.0]'] into ['int', 'string', 'int']
+
+    (We do this as we will later convert the column datatypes to the correct Python/Numpy datatypes)
+    So for every column in the VDV 451 file, check if 'num', 'int' or 'float'.
+
+    :param datatype_str: a list with the datatypes from the VDV 451 file, (with each datatype as a string, e.g. 'char[40]')
+    :return: a list of python datatypes, but as strings
+    """
+
+    # todo add logger?
+    logger = logging.getLogger(__name__)
+
+    dtypes = []
+    for part in datatype_str:
+        part = part.lstrip()  # remove leading spaces
+
+        # check if the datatype is valid (e.g. 'num[9.0]' or 'char[40]' etc.)
+        # according to the VDV 451 specification, only 'char[n]' and 'num[n.0]' are allowed
+
+        regex = r"(char\[[0-9]+\]|num\[[0-9]+.0\])+"
+
+        if not re.match(regex, part):
+            # Avoid the program to crash if the datatype is invalid, but still log a warning
+            # Sometimes, there are floats used for additional columns (columns not formally included the VDV 452 specification)
+            dtypes.append(None)
+            msg = f"Invalid datatype formatting in VDV 451 file: {part} does not match 'char[n]' or 'num[n.0]'. Column will not be imported."
+            logger.warning(msg)
+            continue
+
+        type_info, size_info = part.split("[")
+        if type_info == "num":
+            dtypes.append(VDV_Data_Type.NUM)
+        else:
+            dtypes.append(VDV_Data_Type.CHAR)
+
+    return dtypes
 
 
 def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> None:
@@ -210,6 +314,9 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> N
     :return: None
     """
     logger = logging.getLogger(__name__)
+
+    corresponding_dataclass = VDV_Util.required_tables[EingangsdatenTabelle.table_name]
+    json_list = []
 
     # Open the file
     try:
@@ -221,6 +328,57 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> N
                     parts = list(parts_csvrdr)[0]
 
                     row_data = parts[1:]
+
+                    # create the json obj and give every column value the correct datatype
+                    e_data = {}
+
+                    if len(row_data) != len(EingangsdatenTabelle.column_names_and_data_types):
+                        raise ValueError(
+                            "The file"
+                            + str(EingangsdatenTabelle.abs_file_path)
+                            + " contains an record that has more or less columns than the header specifies. "
+                            + "The record contains "
+                            + str(row_data)
+                            + ", aborting."
+                        )
+
+                    for i_col in range(0, len(row_data)):
+                        column_name = EingangsdatenTabelle.column_names_and_data_types[i_col][0]
+                        column_data_type = EingangsdatenTabelle.column_names_and_data_types[i_col][1]
+
+                        if row_data[i_col].strip() == "":
+                            # Everything that has "no" value in the VDV 451 file is turned into a None
+                            # NULL Entry (Also possible for numbers - thats why it is done BEFORE the Int conversion!)
+                            e_data[column_name] = None
+
+                        elif column_data_type is None:
+                            # Skip the column as it has an invalid data type.
+                            continue
+
+                        elif column_data_type == VDV_Data_Type.NUM:
+                            try:
+                                e_data[column_name] = int(row_data[i_col])
+                            except ValueError as e:
+                                e.add_note(
+                                    "The file"
+                                    + str(EingangsdatenTabelle.abs_file_path)
+                                    + " contains a non-numeric value in a column that is specified as numeric. Aborting."
+                                )
+                                raise e
+                        else:  # CHAR
+                            e_data[column_name] = row_data[i_col]
+
+                    json_list.append(e_data)
+
+        # Now decode the JSON list into the corresponding dataclass objects
+        # todo zeug abfangen hier?
+        # overwrite default behavior of failing on (additional) non-vdv452 properties that possibly where added by the data provider
+        config = xsdata.formats.dataclass.parsers.config.ParserConfig(fail_on_unknown_properties=False)
+        parser = xsdata.formats.dataclass.parsers.JsonParser(config=config)
+
+        # for this, we need to turn the JSON-like list into a JSON string
+        list_of_the_parsed_objects = parser.from_string(json.dumps(json_list), List[corresponding_dataclass])
+        b = 0  # todo weg, nur als sprungmarke für debugging
 
     except UnicodeDecodeError as e:
         # todo specify more in detail where exactly the unicode error occurred?
@@ -288,7 +446,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
         raise ValueError(
             "Not all necessary tables are present in the directory (or present, but empty). Missing tables are: "
             + missing_tables_str
-            + " Aborting.",
+            + " aborting.",
         )
 
     # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
@@ -311,3 +469,7 @@ if __name__ == "__main__":
     path_to_this_file = os.path.dirname(os.path.abspath(__file__))
     sample_files_dir = os.path.join(path_to_this_file, "..", "..", "samples", "VDV", "Trier")
     all_tables = validate_input_data_vdv_451(sample_files_dir)
+
+    for tbl in all_tables:
+        if tbl in VDV_Util.required_tables.keys():
+            import_vdv452_table_records(all_tables[tbl])
