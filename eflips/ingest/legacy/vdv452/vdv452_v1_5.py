@@ -8,8 +8,14 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+@dataclass
+class VDV_Base_Table:
+    # This parent dataclass is only introduced such that we can better do the Lint type annotations in the code at the places where we use such of a table.
+    pass
+
+
 @dataclass(kw_only=True)
-class BasisVerGueltigkeit:
+class BasisVerGueltigkeit(VDV_Base_Table):
     class Meta:
         name = "BASIS_VER_GUELTIGKEIT"
 
@@ -34,7 +40,7 @@ class BasisVerGueltigkeit:
 
 
 @dataclass(kw_only=True)
-class Firmenkalender:
+class Firmenkalender(VDV_Base_Table):
     class Meta:
         name = "FIRMENKALENDER"
 
@@ -69,7 +75,7 @@ class Firmenkalender:
 
 
 @dataclass(kw_only=True)
-class LidVerlauf:
+class LidVerlauf(VDV_Base_Table):
     class Meta:
         name = "LID_VERLAUF"
 
@@ -138,7 +144,7 @@ class LidVerlauf:
 
 
 @dataclass(kw_only=True)
-class OrtHztf:
+class OrtHztf(VDV_Base_Table):
     class Meta:
         name = "ORT_HZTF"
 
@@ -190,7 +196,7 @@ class OrtHztf:
 
 
 @dataclass(kw_only=True)
-class RecFrtHzt:
+class RecFrtHzt(VDV_Base_Table):
     class Meta:
         name = "REC_FRT_HZT"
 
@@ -242,7 +248,7 @@ class RecFrtHzt:
 
 
 @dataclass(kw_only=True)
-class SelFztFeld:
+class SelFztFeld(VDV_Base_Table):
     class Meta:
         name = "SEL_FZT_FELD"
 
@@ -321,7 +327,7 @@ class SelFztFeld:
 
 
 @dataclass(kw_only=True)
-class UebFzt:
+class UebFzt(VDV_Base_Table):
     class Meta:
         name = "UEB_FZT"
 
@@ -400,7 +406,7 @@ class UebFzt:
 
 
 @dataclass(kw_only=True)
-class RecFrt:
+class RecFrt(VDV_Base_Table):
     class Meta:
         name = "REC_FRT"
 
@@ -496,7 +502,7 @@ class RecFrt:
 
 
 @dataclass(kw_only=True)
-class RecOrt:
+class RecOrt(VDV_Base_Table):
     class Meta:
         name = "REC_ORT"
 
@@ -553,7 +559,7 @@ class RecOrt:
 
 
 @dataclass(kw_only=True)
-class RecSel:
+class RecSel(VDV_Base_Table):
     class Meta:
         name = "REC_SEL"
 
@@ -631,7 +637,7 @@ class RecSel:
 
 
 @dataclass(kw_only=True)
-class RecUeb:
+class RecUeb(VDV_Base_Table):
     class Meta:
         name = "REC_UEB"
 
@@ -708,7 +714,7 @@ class RecUeb:
 
 
 @dataclass(kw_only=True)
-class RecLid:
+class RecLid(VDV_Base_Table):
     class Meta:
         name = "REC_LID"
 
@@ -791,7 +797,7 @@ class RecLid:
 
 
 @dataclass(kw_only=True)
-class RecUmlauf:
+class RecUmlauf(VDV_Base_Table):
     class Meta:
         name = "REC_UMLAUF"
 
@@ -878,7 +884,7 @@ class RecUmlauf:
 
 
 @dataclass(kw_only=True)
-class MengeFzgTyp:
+class MengeFzgTyp(VDV_Base_Table):
     class Meta:
         name = "MENGE_FZG_TYP"
 

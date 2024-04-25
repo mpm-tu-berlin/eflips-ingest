@@ -100,7 +100,7 @@ class VDV_Util:
     # fahrzeug waere optional, aber machen wir nicht?
 
     # required tables: die Enum Datatypes als keys und das Dataclass object als value.
-    required_tables = {
+    required_tables: Dict[VDV_Table_Name, vdv452_v1_5.VDV_Base_Table] = {
         VDV_Table_Name.BASIS_VER_GUELTIGKEIT: vdv452_v1_5.BasisVerGueltigkeit,
         VDV_Table_Name.FIRMENKALENDER: vdv452_v1_5.Firmenkalender,
         VDV_Table_Name.REC_ORT: vdv452_v1_5.RecOrt,
@@ -264,7 +264,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     )
 
 
-def parse_datatypes(datatype_str: str) -> list[Optional[VDV_Data_Type]]:
+def parse_datatypes(datatype_str: list[str]) -> list[Optional[VDV_Data_Type]]:
     """
     Converts a list of datatype strings in VDV 451 format to a list of Python/Numpy datatypes
     e.g., turn something like ['num[9.0]', 'char[40]', 'num[2.0]'] into ['int', 'string', 'int']
@@ -306,7 +306,7 @@ def parse_datatypes(datatype_str: str) -> list[Optional[VDV_Data_Type]]:
     return dtypes
 
 
-def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> list[Any]:
+def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> list[vdv452_v1_5.VDV_Base_Table]:
     """
     Imports the records of a VDV 451 table into the database.
     :param EingangsdatenTabelle: The EingangsdatenTabelle object containing the table name and the path to the file
@@ -314,7 +314,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> l
     """
     logger = logging.getLogger(__name__)
 
-    corresponding_dataclass = VDV_Util.required_tables[EingangsdatenTabelle.table_name]
+    corresponding_dataclass: vdv452_v1_5.VDV_Base_Table = VDV_Util.required_tables[EingangsdatenTabelle.table_name]
     json_list = []
 
     # Open the file
