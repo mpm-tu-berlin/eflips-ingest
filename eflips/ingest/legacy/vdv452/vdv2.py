@@ -100,7 +100,7 @@ class VDV_Util:
     # fahrzeug waere optional, aber machen wir nicht?
 
     # required tables: die Enum Datatypes als keys und das Dataclass object als value.
-    required_tables: Dict[VDV_Table_Name, vdv452_v1_5.VDV_Base_Table] = {
+    required_tables = {
         VDV_Table_Name.BASIS_VER_GUELTIGKEIT: vdv452_v1_5.BasisVerGueltigkeit,
         VDV_Table_Name.FIRMENKALENDER: vdv452_v1_5.Firmenkalender,
         VDV_Table_Name.REC_ORT: vdv452_v1_5.RecOrt,
