@@ -13,7 +13,7 @@ from vdv452data import (
 
 import xsdata.formats.dataclass.parsers.json  # todo ist derzeit nur ne entwickler dependency(?)
 import xsdata.formats.dataclass.parsers.config  # todo AGAIN!!! s.a.
-from typing import List
+from typing import List, Any
 
 
 class VDV_Table_Name(enum.Enum):
@@ -294,7 +294,7 @@ def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
             # Avoid the program to crash if the datatype is invalid, but still log a warning
             # Sometimes, there are floats used for additional columns (columns not formally included the VDV 452 specification)
             dtypes.append(None)
-            #todo genauere angabe, in welcher Datei / Spalte es auftrat?
+            # todo genauere angabe, in welcher Datei / Spalte es auftrat?
             msg = f"Invalid datatype formatting in VDV 451 file: {part} does not match 'char[n]' or 'num[n.0]'. Column will not be imported."
             logger.warning(msg)
             continue
@@ -308,7 +308,7 @@ def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
     return dtypes
 
 
-def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> None:
+def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> list[Any]:
     """
     Imports the records of a VDV 451 table into the database.
     :param EingangsdatenTabelle: The EingangsdatenTabelle object containing the table name and the path to the file
@@ -381,7 +381,6 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> N
         list_of_the_parsed_objects = parser.from_string(json.dumps(json_list), List[corresponding_dataclass])
 
         return list_of_the_parsed_objects
-
 
     except UnicodeDecodeError as e:
         # todo specify more in detail where exactly the unicode error occurred?

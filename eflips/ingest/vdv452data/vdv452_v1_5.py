@@ -68,7 +68,6 @@ class Firmenkalender:
     )
 
 
-
 @dataclass(kw_only=True)
 class LidVerlauf:
     class Meta:
@@ -116,7 +115,6 @@ class LidVerlauf:
             "required": True,
             "min_inclusive": 1,
             "max_inclusive": 2,
-
         }
     )
     ort_nr: int = field(
@@ -126,7 +124,6 @@ class LidVerlauf:
             "required": True,
             "min_inclusive": 1,
             "max_inclusive": 999999,
-
         }
     )
 
@@ -136,9 +133,8 @@ class LidVerlauf:
             "name": "PRODUKTIV",
             "type": "Element",
             "nillable": True,
-        }
+        },
     )
-
 
 
 @dataclass(kw_only=True)
@@ -189,7 +185,6 @@ class OrtHztf:
             "required": True,
             "min_inclusive": 1,
             "max_inclusive": 65532,
-
         }
     )
 
@@ -244,6 +239,7 @@ class RecFrtHzt:
             "max_inclusive": 65532,
         }
     )
+
 
 @dataclass(kw_only=True)
 class SelFztFeld:
@@ -322,7 +318,6 @@ class SelFztFeld:
             "max_inclusive": 65532,
         }
     )
-
 
 
 @dataclass(kw_only=True)
@@ -443,7 +438,6 @@ class RecFrt:
             "required": True,
             "min_inclusive": 1,
             "max_inclusive": 999999,
-
         }
     )
     tagesart_nr: int = field(
@@ -453,7 +447,6 @@ class RecFrt:
             "required": True,
             "min_inclusive": 1,
             "max_inclusive": 999,
-
         }
     )
 
@@ -540,7 +533,6 @@ class RecOrt:
             "type": "Element",
             "required": True,
             "max_length": 40,
-
         }
     )
 
@@ -715,8 +707,6 @@ class RecUeb:
     )
 
 
-
-
 @dataclass(kw_only=True)
 class RecLid:
     class Meta:
@@ -763,7 +753,7 @@ class RecLid:
             "name": "LI_KUERZEL",
             "type": "Element",
             "max_length": 6,
-            "nillable": True, #todo?
+            "nillable": True,  # todo?
         }
     )
     lidname: Optional[str] = field(
@@ -771,7 +761,7 @@ class RecLid:
             "name": "LIDNAME",
             "type": "Element",
             "max_length": 40,
-            "nillable": True,#todo?
+            "nillable": True,  # todo?
         }
     )
     routen_art: Optional[int] = field(
@@ -780,10 +770,9 @@ class RecLid:
             "type": "Element",
             "min_inclusive": -2147483648,
             "max_inclusive": 2147483647,
-            "nillable": True,#todo?
+            "nillable": True,  # todo?
         }
     )
-
 
     lid_verlauf: list[LidVerlauf] = field(
         default_factory=list,
@@ -877,7 +866,7 @@ class RecUmlauf:
             "min_inclusive": 1,
             "max_inclusive": 252,
             "nillable": True,
-        }
+        },
     )
     rec_frt: list[RecFrt] = field(
         default_factory=list,
@@ -917,7 +906,7 @@ class MengeFzgTyp:
             "name": "FZG_TYP_TEXT",
             "type": "Element",
             "max_length": 40,
-            "nillable": True, #todo?
+            "nillable": True,  # todo?
         }
     )
 
@@ -926,7 +915,7 @@ class MengeFzgTyp:
             "name": "STR_FZG_TYP",
             "type": "Element",
             "max_length": 6,
-            "nillable": True, #todo?
+            "nillable": True,  # todo?
         }
     )
 
@@ -946,7 +935,7 @@ class MengeFzgTyp:
             "min_inclusive": 0,
             "max_inclusive": 99,
             "nillable": True,
-        }
+        },
     )
 
     fzg_hoehe: Optional[int] = field(
@@ -957,7 +946,7 @@ class MengeFzgTyp:
             "min_inclusive": 0,
             "max_inclusive": 999,
             "nillable": True,
-        }
+        },
     )
 
     fzg_breite: Optional[int] = field(
@@ -968,7 +957,7 @@ class MengeFzgTyp:
             "min_inclusive": 0,
             "max_inclusive": 999,
             "nillable": True,
-        }
+        },
     )
 
     verbrauch_distanz: Optional[int] = field(
@@ -979,5 +968,5 @@ class MengeFzgTyp:
             "min_inclusive": 0,
             "max_inclusive": 99999,
             "nillable": True,
-        }
+        },
     )
