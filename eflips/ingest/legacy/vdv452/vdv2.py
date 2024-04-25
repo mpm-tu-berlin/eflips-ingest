@@ -10,7 +10,7 @@ from eflips.ingest.legacy.vdv452 import vdv452_v1_5
 
 import xsdata.formats.dataclass.parsers.json  # todo ist derzeit nur ne entwickler dependency(?)
 import xsdata.formats.dataclass.parsers.config  # todo AGAIN!!! s.a.
-from typing import List, Any, Tuple, Optional
+from typing import List, Any, Tuple, Optional, Dict
 
 
 class VDV_Table_Name(enum.Enum):
@@ -264,7 +264,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     )
 
 
-def parse_datatypes(datatype_str) -> list[Optional[VDV_Data_Type]]:
+def parse_datatypes(datatype_str: str) -> list[Optional[VDV_Data_Type]]:
     """
     Converts a list of datatype strings in VDV 451 format to a list of Python/Numpy datatypes
     e.g., turn something like ['num[9.0]', 'char[40]', 'num[2.0]'] into ['int', 'string', 'int']
@@ -329,7 +329,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: EingangsdatenTabelle) -> l
                     row_data = parts[1:]
 
                     # create the json obj and give every column value the correct datatype
-                    e_data = {}
+                    e_data: Dict[str, str | int | None] = {}
 
                     if len(row_data) != len(EingangsdatenTabelle.column_names_and_data_types):
                         raise ValueError(
