@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from eflips.ingest.vdv2 import check_vdv451_file_header, EingangsdatenTabelle, validate_input_data_vdv_451
+from eflips.ingest.legacy.vdv452.vdv2 import check_vdv451_file_header, EingangsdatenTabelle, validate_input_data_vdv_451
 
 
 def abspath_to_testfile(testfile_name: str) -> Path:

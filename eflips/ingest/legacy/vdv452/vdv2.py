@@ -6,14 +6,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from vdv452data import (
-    vdv452_v1_5,
-)  # todo das geht nur beim direkten ausführen, aber in der eflips.ingest.legacy ebene kriege ich schwierigkeiten mit eflips.model
-
+from eflips.ingest.legacy.vdv452 import vdv452_v1_5
 
 import xsdata.formats.dataclass.parsers.json  # todo ist derzeit nur ne entwickler dependency(?)
 import xsdata.formats.dataclass.parsers.config  # todo AGAIN!!! s.a.
-from typing import List, Any
+from typing import List, Any, Tuple, Optional
 
 
 class VDV_Table_Name(enum.Enum):
@@ -122,8 +119,9 @@ class EingangsdatenTabelle:
     abs_file_path: str
     character_set: str
     table_name: VDV_Table_Name
-    column_names_and_data_types: list[(str, (VDV_Data_Type | None))]  # None represents "other / invalid data type" here
-    # column_names: list[str]
+    column_names_and_data_types: list[
+        Tuple[str, Optional[VDV_Data_Type]]
+    ]  # None (optional) in the VDV_Data_Type represents "other / invalid data type" here
 
 
 def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
@@ -266,7 +264,7 @@ def check_vdv451_file_header(abs_file_path: str) -> EingangsdatenTabelle:
     )
 
 
-def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
+def parse_datatypes(datatype_str) -> list[Optional[VDV_Data_Type]]:
     """
     Converts a list of datatype strings in VDV 451 format to a list of Python/Numpy datatypes
     e.g., turn something like ['num[9.0]', 'char[40]', 'num[2.0]'] into ['int', 'string', 'int']
@@ -281,7 +279,7 @@ def parse_datatypes(datatype_str) -> list[VDV_Data_Type | None]:
     # todo add logger?
     logger = logging.getLogger(__name__)
 
-    dtypes = []
+    dtypes: list[Optional[VDV_Data_Type]] = []
     for part in datatype_str:
         part = part.lstrip()  # remove leading spaces
 
@@ -469,7 +467,7 @@ def validate_input_data_vdv_451(abs_path_to_folder_with_vdv_files: str) -> dict[
 
 if __name__ == "__main__":
     path_to_this_file = os.path.dirname(os.path.abspath(__file__))
-    sample_files_dir = os.path.join(path_to_this_file, "UVG")
+    sample_files_dir = os.path.join(path_to_this_file, "..", "..", "UVG")
     all_tables = validate_input_data_vdv_451(sample_files_dir)
 
     all_data = {}
