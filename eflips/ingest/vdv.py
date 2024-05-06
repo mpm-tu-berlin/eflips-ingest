@@ -5,7 +5,6 @@ import logging
 import os
 import pickle
 import re
-import warnings
 from dataclasses import dataclass
 from datetime import date, timedelta, datetime, time
 from enum import Enum
@@ -20,7 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 
-from eflips.ingest import AbstractIngester
+from eflips.ingest.base import AbstractIngester
 from eflips.ingest.vdv452data import (
     VdvBaseObject,
     BasisVerGueltigkeit,
@@ -46,7 +45,8 @@ class VDV_Data_Type(enum.Enum):
     """
 
     CHAR = "char"
-    NUM = "num"
+    INT = "num"
+    FLOAT = enum.auto
 
 
 class VDV_Table_Name(enum.Enum):
@@ -165,8 +165,58 @@ class VDVTable:
     ]  # None (optional) in the VDV_Data_Type represents "other / invalid data type" here
 
 
+def fix_identical_stop_times(stop_times: List[StopTime]) -> None:
+    """
+    This function goes through a list of stop times and changes the arrival time of a stop time to be the same as the
+
+    :param stop_times: A list of stop times. The list is assumed to be sorted by arrival time.
+    :return: Nothing. The list is modified in place.
+    """
+    # First, identify the indizes of the stop times that have the same arrival time
+    indizes_of_identical_arrival_times: Dict[datetime, List[int]] = {}
+    for i, stop_time in enumerate(stop_times):
+        if stop_time.arrival_time not in indizes_of_identical_arrival_times:
+            indizes_of_identical_arrival_times[stop_time.arrival_time] = []
+        indizes_of_identical_arrival_times[stop_time.arrival_time].append(i)
+    indizes_of_identical_arrival_times = {k: v for k, v in indizes_of_identical_arrival_times.items() if len(v) > 1}
+
+    # Now depending on the length of the list, we have to adjust the arrival times, so they are evenly spaced
+    # throughout a minute (e.g. with 2 stops, the first one arrives at 12:00:00 and the second one at 12:00:30)
+    # We do this by adding a timedelta to the arrival time of the stop time.
+    # However, if the stop time is the last one in the list, we then need to *subtract* the offest, so the last
+    # time stays the same
+
+    for identical_arrival_times in indizes_of_identical_arrival_times.values():
+        assert len(identical_arrival_times) > 1
+        # We cannot assume the minimum resolution is one minute. So we need to check the minimum difference
+        # Before and after
+        if identical_arrival_times[0] != 0:
+            diff_before = (
+                stop_times[identical_arrival_times[0]].arrival_time
+                - stop_times[identical_arrival_times[0] - 1].arrival_time
+            )
+        else:
+            diff_before = timedelta(seconds=60)
+        if identical_arrival_times[-1] != len(stop_times) - 1:
+            diff_after = (
+                stop_times[identical_arrival_times[-1] + 1].arrival_time
+                - stop_times[identical_arrival_times[-1]].arrival_time
+            )
+        else:
+            diff_after = timedelta(seconds=60)
+        # We take the minimum of the two
+        offset = min(diff_before, diff_after) / len(identical_arrival_times)
+        for i, idx in enumerate(identical_arrival_times):
+            stop_times[idx].arrival_time += i * offset
+        if idx == len(stop_times) - 1:
+            # This is how much we shifted the last stop time, so we need to subtract it again
+            max_offset = (len(identical_arrival_times) - 1) * offset
+            for idx in identical_arrival_times:
+                stop_times[idx].arrival_time -= max_offset
+
+
 class VdvIngester(AbstractIngester):
-    def prepare(
+    def prepare(  # type: ignore[override]
         self,
         x10_zip_file: Path,
         progress_callback: None | Callable[[float], None] = None,
@@ -207,6 +257,8 @@ class VdvIngester(AbstractIngester):
         return True, uuid
 
     def ingest(self, uuid: UUID, progress_callback: None | Callable[[float], None] = None) -> None:
+        logger = logging.getLogger(__name__)
+
         # Load the paths to the tables
         temp_dir = self.path_for_uuid(uuid)
         all_tables_file = Path(temp_dir) / "all_tables.pkl"
@@ -230,7 +282,7 @@ class VdvIngester(AbstractIngester):
                 session.add(scenario)
 
                 # Vehicle Types
-                vehicle_types_by_vdv_pk: Dict[Tuple[int, int], VehicleType] = {}
+                vehicle_types_by_vdv_pk: Dict[Tuple[int | date | str, ...], VehicleType] = {}
                 for vdv_vehicle_type in all_data[VDV_Table_Name.MENGE_FZG_TYP]:
                     assert isinstance(vdv_vehicle_type, MengeFzgTyp)
                     db_vehicle_type = vdv_vehicle_type.to_vehicle_type(scenario)
@@ -238,7 +290,7 @@ class VdvIngester(AbstractIngester):
                     vehicle_types_by_vdv_pk[vdv_vehicle_type.primary_key] = db_vehicle_type
 
                 # Rotations
-                rotations_by_vdv_pk: Dict[Tuple[int, str, date, ...], Rotation] = {}
+                rotations_by_vdv_pk: Dict[Tuple[int | str | date, ...], Rotation] = {}
 
                 # We may need a dummy vehicle type for rotations that do not have a vehicle type associated with them
                 dummy_vehicle_type: VehicleType | None = None
@@ -248,13 +300,7 @@ class VdvIngester(AbstractIngester):
 
                     if vdv_rotation.fzg_typ_nr is None and dummy_vehicle_type is None:
                         # We need to add a dummy vehicle type for the first time, create it
-                        dummy_vehicle_type = VehicleType(
-                            scenario=scenario,
-                            name="Dummy Vehicle Type",
-                            opportunity_charging_capable=False,
-                            battery_capacity=10000,
-                            charging_curve=[[0, 1], [1000, 1000]],
-                        )
+                        dummy_vehicle_type = self.create_dummy_vehicle_type(scenario)
                         session.add(dummy_vehicle_type)
 
                     db_rotation = vdv_rotation.to_rotation(
@@ -280,7 +326,7 @@ class VdvIngester(AbstractIngester):
                 # Lines
                 # The same Line might be shared by multiple RecLid objects, but is unique by li_kuerzel
                 lines_by_li_kuerzel: Dict[str, Line] = {}
-                lines_by_vdv_pk: Dict[Tuple[int, ...], Line] = {}
+                lines_by_vdv_pk: Dict[Tuple[int | date | str, ...], Line] = {}
 
                 assert all(isinstance(x, RecLid) for x in all_data[VDV_Table_Name.REC_LID])
                 rec_lids = [x for x in all_data[VDV_Table_Name.REC_LID] if isinstance(x, RecLid)]
@@ -298,10 +344,10 @@ class VdvIngester(AbstractIngester):
                 # Routes
                 # Those are more intricate, as we will have to compose them from the RecLid and RecSel and ??? tables
                 # We need to construct quite a few helper dictionaries for this
-                lines_by_basis_version_and_li_nr = {(k[0], k[1]): v for k, v in lines_by_vdv_pk.items()}
+                lines_by_basis_version_and_li_nr: Dict[Tuple[int | date | str, ...], Line] = {
+                    (k[0], k[1]): v for k, v in lines_by_vdv_pk.items()
+                }
 
-                assert all(isinstance(x, RecSel) for x in all_data[VDV_Table_Name.REC_SEL])
-                rec_orts: List[RecOrt] = [x for x in all_data[VDV_Table_Name.REC_ORT] if isinstance(x, RecOrt)]
                 rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr = {
                     (r.basis_version, r.onr_typ_nr, r.ort_nr): r for r in rec_orts
                 }
@@ -329,13 +375,16 @@ class VdvIngester(AbstractIngester):
                     lid_verlaufs_by_basis_version_and_li_nr_and_str_li_var[key].sort(key=lambda x: x.li_lfd_nr)
 
                 # Now we can construct the routes
-                routes_by_vdv_pk: Dict[Tuple[int, ...], Route] = {}
+                routes_by_vdv_pk: Dict[Tuple[int | date | str, ...], Route] = {}
                 assert all(isinstance(x, RecLid) for x in all_data[VDV_Table_Name.REC_LID])
                 rec_lids = [x for x in all_data[VDV_Table_Name.REC_LID] if isinstance(x, RecLid)]
 
-                rec_selss: Dict[Tuple[int, int, str], Route] = {}  # Later we will use this to construct the trips
+                rec_selss: Dict[
+                    Tuple[int | date | str, ...], List[RecSel]
+                ] = {}  # Later we will use this to construct the trips
 
                 for rec_lid in rec_lids:
+                    route: Route
                     route, rec_selss[(rec_lid.basis_version, rec_lid.li_nr, rec_lid.str_li_var)] = rec_lid.to_route(
                         scenario=scenario,
                         lines_by_basis_version_andli_nr=lines_by_basis_version_and_li_nr,
@@ -351,6 +400,12 @@ class VdvIngester(AbstractIngester):
 
                 assert all(isinstance(x, SelFztFeld) for x in all_data[VDV_Table_Name.SEL_FZT_FELD])
                 sel_fzt_felds = [x for x in all_data[VDV_Table_Name.SEL_FZT_FELD] if isinstance(x, SelFztFeld)]
+                sel_fzt_felds_by_pk: Dict[Tuple[int | date | str, ...], List[SelFztFeld]] = {}
+                for this_sel_fzt_feld in sel_fzt_felds:
+                    pk = this_sel_fzt_feld.primary_key
+                    if pk not in sel_fzt_felds_by_pk:
+                        sel_fzt_felds_by_pk[pk] = []
+                    sel_fzt_felds_by_pk[pk].append(this_sel_fzt_feld)
 
                 assert all(isinstance(x, RecFrt) for x in all_data[VDV_Table_Name.REC_FRT])
                 rec_frts = [x for x in all_data[VDV_Table_Name.REC_FRT] if isinstance(x, RecFrt)]
@@ -397,9 +452,44 @@ class VdvIngester(AbstractIngester):
                             rec_sel.sel_ziel_typ,
                             rec_sel.sel_ziel,
                         )
-                        sel_fzt_feld = [x for x in sel_fzt_felds if x.primary_key == sel_fzt_feld_pk]
+
+                        if sel_fzt_feld_pk in sel_fzt_felds_by_pk.keys():
+                            sel_fzt_feld = sel_fzt_felds_by_pk[sel_fzt_feld_pk]
+                        else:
+                            logger.debug(f"Could not find SelFztFeld for {sel_fzt_feld_pk}")
+                            # Find one by relaxing the constraints
+                            sel_fzt_feld = [
+                                x
+                                for x in sel_fzt_felds
+                                if (x.basis_version, x.bereich_nr, x.onr_typ_nr, x.ort_nr, x.sel_ziel_typ, x.sel_ziel)
+                                == (
+                                    rec_sel.basis_version,
+                                    rec_sel.bereich_nr,
+                                    rec_sel.onr_typ_nr,
+                                    rec_sel.ort_nr,
+                                    rec_sel.sel_ziel_typ,
+                                    rec_sel.sel_ziel,
+                                )
+                            ]
+                            sel_fzt_feld = [sel_fzt_feld[0]]
+
                         if len(sel_fzt_feld) != 1:
-                            warnings.warn(f"Could not find exactly one SelFztFeld for {sel_fzt_feld_pk}")
+                            logger.info(f"Could not find exactly one SelFztFeld for {sel_fzt_feld_pk}")
+                            # If there are more than one, make sure the durations are the same
+                            if len(sel_fzt_feld) > 1:
+                                durations = [x.sel_fzt for x in sel_fzt_feld]
+                                if len(set(durations)) != 1:
+                                    logger.warning(
+                                        f"Multiple SelFztFelds for {sel_fzt_feld_pk} have different durations: {durations}"
+                                    )
+                                    raise ValueError(
+                                        f"Multiple SelFztFelds for {sel_fzt_feld_pk} have different durations: {durations}"
+                                    )
+                                else:
+                                    duration = durations[0]
+                            else:
+                                # Length is 0 -- create a zero duration
+                                duration = timedelta(minutes=0)
                             # For now, create a dummy one
                             sel_fzt_feld = [
                                 SelFztFeld(
@@ -410,7 +500,7 @@ class VdvIngester(AbstractIngester):
                                     ort_nr=rec_sel.ort_nr,
                                     sel_ziel_typ=rec_sel.sel_ziel_typ,
                                     sel_ziel=rec_sel.sel_ziel,
-                                    sel_fzt=timedelta(minutes=1),
+                                    sel_fzt=duration,
                                 )
                             ]
                         this_route_sel_fzt_felds.append(sel_fzt_feld[0])
@@ -437,11 +527,11 @@ class VdvIngester(AbstractIngester):
                             elif len(first_station_ort_hztfs) == 1:
                                 dwell_duration = first_station_ort_hztfs[0].hp_hzt
                             else:
-                                warnings.warn(
-                                    f"Could not find any dwell duration for the first station {first_station_pk}"
+                                logger.debug(
+                                    f"Could not find any dwell duration for the station {first_station_pk}. Adding 0s."
                                 )
                                 # For now, create a dummy one
-                                dwell_duration = timedelta(seconds=1)
+                                dwell_duration = timedelta(seconds=0)
 
                             arrival_time_from_start.append(
                                 elapsed_duration
@@ -469,9 +559,11 @@ class VdvIngester(AbstractIngester):
                         elif len(next_station_ort_hztfs) == 1:
                             dwell_duration = next_station_ort_hztfs[0].hp_hzt
                         else:
-                            warnings.warn(f"Could not find any dwell duration for the first station {first_station_pk}")
+                            logger.debug(
+                                f"Could not find any dwell duration for the station {next_station_pk}. Adding 0s."
+                            )
                             # For now, create a dummy one
-                            dwell_duration = timedelta(seconds=1)
+                            dwell_duration = timedelta(seconds=0)
 
                         dwell_durations.append(dwell_duration)
                         elapsed_duration += dwell_duration
@@ -479,7 +571,6 @@ class VdvIngester(AbstractIngester):
                     ### CREATE THE TRIP
                     # We need to do this on all days that have the same tagesart as the rec_frt
                     # We need to find the tagesart of the rec_frt
-                    session.flush()  # TODO: REMOVE THIS FLUSH
                     for firmenkalender in firmenkalenders:
                         if firmenkalender.tagesart_nr == rec_frt.tagesart_nr:
                             the_date = firmenkalender.betriebstag
@@ -528,10 +619,18 @@ class VdvIngester(AbstractIngester):
                                 )
                                 stop_times.append(stop_time)
 
+                            # Fix identical stop times
+                            fix_identical_stop_times(stop_times)
+
                             # Look up the rotation using the basis_version and um_uid
                             trip.rotation = rotation
                             session.add(trip)
-                            session.commit()  # TODO: Remove this flush
+
+                # Delete all rotations in this scenario with no trips
+                session.flush()
+                for rotation in scenario.rotations:
+                    if len(rotation.trips) == 0:
+                        session.delete(rotation)
 
             except Exception as e:
                 session.rollback()
@@ -540,12 +639,50 @@ class VdvIngester(AbstractIngester):
                 session.commit()
 
     @classmethod
+    def create_dummy_vehicle_type(cls, scenario: Scenario) -> VehicleType:
+        dummy_vehicle_type = VehicleType(
+            scenario=scenario,
+            name="Dummy Vehicle Type",
+            opportunity_charging_capable=False,
+            battery_capacity=10000,
+            charging_curve=[[0, 1], [1000, 1000]],
+        )
+        return dummy_vehicle_type
+
+    @classmethod
     def prepare_param_names(cls) -> Dict[str, str | Dict[Enum, str]]:
-        pass
+        """
+        A dictionary containing the parameter names for :meth:`prepare`.
+
+        These should be short, descriptive names for the parameters of the :meth:`prepare` method. The keys must be the
+        names of the parameters, and the values should be strings describing the parameter. If the keyword argument is
+        an enumerated type, the value should be a dictionary with the keys being the members.
+
+        This method can then be used to generate a help text for the user.
+
+        :return: A dictionary containing the parameter hints for the prepare method.
+        """
+        return {
+            "x10_zip_file": "VDV data archive",
+        }
 
     @classmethod
     def prepare_param_description(cls) -> Dict[str, str | Dict[Enum, str]]:
-        pass
+        """
+        A dictionary containing the parameter descriptions for :meth:`prepare`.
+
+        These should be longer, more detailed descriptions of the parameters of the :meth:`prepare`
+        method. The keys must be the names of the parameters, and the values should be strings describing the parameter.
+
+        This method can then be used to generate a help text for the user.
+
+        :return: A dictionary containing the parameter hints for the prepare method.
+        """
+        return {
+            "x10_zip_file": "A zip file containing the VDV data. The zip file must contain all necessary tables for the"
+            " VDV 451/452 format. These should be in the form of .x10 files in the top level of the zip"
+            " file.",
+        }
 
 
 def validate_zip_file(zipfile: Path) -> bool | Dict[str, str]:
@@ -623,7 +760,7 @@ def validate_input_data_vdv_451(
 
         except (ValueError, UnicodeDecodeError) as e:
             msg = "While processing " + abs_file_path + " the following exception occurred: "
-            logger.warning(msg, exc_info=e)
+            logger.debug(msg, exc_info=e)
             continue
 
     # Required Tables:
@@ -817,22 +954,27 @@ def parse_datatypes(datatype_str: list[str]) -> list[Optional[VDV_Data_Type]]:
         # check if the datatype is valid (e.g. 'num[9.0]' or 'char[40]' etc.)
         # according to the VDV 451 specification, only 'char[n]' and 'num[n.0]' are allowed
 
-        regex = r"(char\[[0-9]+\]|num\[[0-9]+.0\])+"
+        regex = r"(char\[[0-9]+\]|num\[[0-9]+.[0-9]+\])+"
 
         if not re.match(regex, part):
             # Avoid the program to crash if the datatype is invalid, but still log a warning
             # Sometimes, there are floats used for additional columns (columns not formally included the VDV 452 specification)
             dtypes.append(None)
             # todo genauere angabe, in welcher Datei / Spalte es auftrat?
-            msg = f"Invalid datatype formatting in VDV 451 file: {part} does not match 'char[n]' or 'num[n.0]'. Column will not be imported."
+            msg = f"Invalid datatype formatting in VDV 451 file: {part} does not match 'char[n]' or 'num[n.n]'. Column will not be imported."
             logger.warning(msg)
             continue
 
-        type_info, size_info = part.split("[")
-        if type_info == "num":
-            dtypes.append(VDV_Data_Type.NUM)
-        else:
+        regex_for_char = r"char\[[0-9]+\]"
+        regex_for_int = r"num\[[0-9]+.0\]"
+        regex_for_float = r"num\[[0-9]+.[0-9]+\]"
+
+        if re.match(regex_for_char, part):
             dtypes.append(VDV_Data_Type.CHAR)
+        elif re.match(regex_for_int, part):
+            dtypes.append(VDV_Data_Type.INT)
+        elif re.match(regex_for_float, part):
+            dtypes.append(VDV_Data_Type.FLOAT)
 
     return dtypes
 
@@ -858,7 +1000,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: VDVTable) -> list[VdvBaseO
             row_data = row[1:]
 
             # create the json obj and give every column value the correct datatype
-            e_data: Dict[str, str | int | None] = {}
+            e_data: Dict[str, str | int | float | None] = {}
 
             if len(row_data) != len(EingangsdatenTabelle.column_names_and_data_types):
                 raise ValueError(
@@ -883,7 +1025,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: VDVTable) -> list[VdvBaseO
                     # Skip the column as it has an invalid data type.
                     continue
 
-                elif column_data_type == VDV_Data_Type.NUM:
+                elif column_data_type == VDV_Data_Type.INT:
                     try:
                         e_data[column_name] = int(row_data[i_col])
                     except ValueError as e:
@@ -893,8 +1035,26 @@ def import_vdv452_table_records(EingangsdatenTabelle: VDVTable) -> list[VdvBaseO
                             + " contains a non-numeric value in a column that is specified as numeric. Aborting."
                         )
                         raise e
-                else:  # CHAR
+                elif column_data_type == VDV_Data_Type.FLOAT:
+                    try:
+                        e_data[column_name] = float(row_data[i_col])
+                    except ValueError as e:
+                        e.add_note(
+                            "The file"
+                            + str(EingangsdatenTabelle.abs_file_path)
+                            + " contains a non-numeric value in a column that is specified as numeric. Aborting."
+                        )
+                        raise e
+                elif column_data_type == VDV_Data_Type.CHAR:
                     e_data[column_name] = row_data[i_col]
+                else:
+                    raise ValueError(
+                        "The file"
+                        + str(EingangsdatenTabelle.abs_file_path)
+                        + " contains a column with an invalid data type: "
+                        + str(column_data_type)
+                        + ". Aborting."
+                    )
             dict_list.append(e_data)
 
         # Now that we have created a nice dictionary, turn it into an object of the corresponding dataclass
@@ -904,7 +1064,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: VDVTable) -> list[VdvBaseO
                 # If there are multiple. raise an error.
                 # However, if the same entry is present multiple times, we do not raise an error.
                 # So we need to turn the list of dictionaries inso a set of objects and check if the length is 1.
-                objects = []
+                objects: List[VdvBaseObject] = []
                 for d in dict_list:
                     objects.append(BasisVerGueltigkeit.from_dict(d))
                 if len(set(objects)) != 1:
@@ -913,6 +1073,7 @@ def import_vdv452_table_records(EingangsdatenTabelle: VDVTable) -> list[VdvBaseO
                         + str(EingangsdatenTabelle.table_name)
                         + " contains multiple distinct entries. Only one entry is allowed. Aborting."
                     )
+                return objects
 
             case VDV_Table_Name.FIRMENKALENDER:
                 return [Firmenkalender.from_dict(d) for d in dict_list]

@@ -4,6 +4,7 @@
 Generator: DataclassGenerator
 See: https://xsdata.readthedocs.io/
 """
+import logging
 import warnings
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -12,7 +13,9 @@ from datetime import date, timedelta
 from enum import Enum
 from typing import Optional, Dict, Tuple, List
 
-from eflips.model import VehicleType, Scenario, Rotation, TripType, Line, Route, AssocRouteStation, Station
+from eflips.model import VehicleType, Scenario, Rotation, Line, Route, AssocRouteStation, Station
+
+from eflips.ingest.util import get_altitude
 
 
 class OnrTyp(Enum):
@@ -36,12 +39,6 @@ class RoutenArt(Enum):
     FROM_DEPOT = 3
     ZUFAHRT = 4
 
-    def to_trip_type(self) -> TripType:
-        if self.type == RoutenArt.NORMAL:
-            return TripType.PASSENGER
-        else:
-            return TripType.EMPTY
-
 
 @dataclass
 class VdvBaseObject(ABC):
@@ -64,7 +61,7 @@ class VdvBaseObject(ABC):
 
     @classmethod
     @abstractmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "VdvBaseObject":
+    def from_dict(cls, data: Dict[str, int | str | float | None]) -> "VdvBaseObject":
         """
         Load the data from a dictionary.
         """
@@ -108,7 +105,7 @@ class VdvBaseObjectWithONR(VdvBaseObject):
     """
 
 
-@dataclass()
+@dataclass
 class BasisVerGueltigkeit(VdvBaseObject):
     """
     The dataclass corresponding to BASIS_VER_GUELTIGKEIT (993) in the VDV-452 specification.
@@ -126,13 +123,8 @@ class BasisVerGueltigkeit(VdvBaseObject):
     The date after which the schedule is valid.
     """
 
-    basis_version: str
-    """
-    A nine-digit numeric string that identifies the version of the schedule.
-    """
-
     @classmethod
-    def from_dict(cls, data: Dict[str, int]) -> "BasisVerGueltigkeit":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "BasisVerGueltigkeit":
         """
         Load the data from a dictionary.
         :param data: A dictionary with the data. It should contain:
@@ -141,12 +133,16 @@ class BasisVerGueltigkeit(VdvBaseObject):
         :return: The object itself.
 
         """
+        assert isinstance(data["VER_GUELTIGKEIT"], int), "The `ver_gueltigkeit` should be an integer."
         year = data["VER_GUELTIGKEIT"] // 10000
         month = (data["VER_GUELTIGKEIT"] % 10000) // 100
         day = data["VER_GUELTIGKEIT"] % 100
 
-        return BasisVerGueltigkeit(ver_gueltigkeit=date(year, month, day), basis_version=str(data["BASIS_VERSION"]))
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
 
+        return BasisVerGueltigkeit(ver_gueltigkeit=date(year, month, day), basis_version=data["BASIS_VERSION"])
+
+    @property
     def primary_key(self) -> Tuple[int | date | str, ...]:
         """
         The primary key of the object. Used e.g. to store it in a dictionary.
@@ -154,10 +150,12 @@ class BasisVerGueltigkeit(VdvBaseObject):
         """
         return (self.ver_gueltigkeit,)
 
-    def __eq__(self, other):
+    def __eq__(self: "BasisVerGueltigkeit", other: object) -> bool:
+        if not isinstance(other, BasisVerGueltigkeit):
+            return False
         return self.ver_gueltigkeit == other.ver_gueltigkeit and self.basis_version == other.basis_version
 
-    def __hash__(self):
+    def __hash__(self: "BasisVerGueltigkeit") -> int:
         return hash((self.ver_gueltigkeit, self.basis_version))
 
 
@@ -181,7 +179,7 @@ class Firmenkalender(VdvBaseObject):
     """
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "Firmenkalender":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "Firmenkalender":
         """
         Load the data from a dictionary.
         :param data: A dictionary with the data. It should contain:
@@ -190,10 +188,13 @@ class Firmenkalender(VdvBaseObject):
             - "TAGESART_NR": The type of day this is.
         :return: The object itself.
         """
-
+        assert isinstance(data["BETRIEBSTAG"], int), "The `betriebstag` should be an integer."
         year = data["BETRIEBSTAG"] // 10000
         month = (data["BETRIEBSTAG"] % 10000) // 100
         day = data["BETRIEBSTAG"] % 100
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["TAGESART_NR"], int), "The `tagesart_nr` should be an integer."
 
         return Firmenkalender(
             basis_version=data["BASIS_VERSION"],
@@ -201,6 +202,7 @@ class Firmenkalender(VdvBaseObject):
             tagesart_nr=data["TAGESART_NR"],
         )
 
+    @property
     def primary_key(self) -> Tuple[int | date | str, ...]:
         """
         The primary key of the object. Used e.g. to store it in a dictionary.
@@ -246,12 +248,7 @@ class LidVerlauf(VdvBaseObjectWithONR):
     Restriction: Should be a six-character string.
     """
 
-    produktiv: Optional[bool]
-    """
-    This is a flag that indicates whether the trip is a productive trip -> TripType.PASSENGER in eflips-model world or 
-    a non-productive trip -> TripType.EMPTY in eflips-model world.
-    """
-
+    @property
     def primary_key(self) -> Tuple[int | date | str, ...]:
         """
         The primary key of the object. Used e.g. to store it in a dictionary.
@@ -260,31 +257,7 @@ class LidVerlauf(VdvBaseObjectWithONR):
         return self.basis_version, self.li_nr, self.str_li_var, self.li_lfd_nr
 
     @classmethod
-    def dict_by_first_three_pk(
-        cls, all_lid_verlaufs: List["LidVerlauf"]
-    ) -> Dict[Tuple[int, int, int], List["LidVerlauf"]]:
-        """
-        Create a dict of lists of the LiadVeralaufs for each route.
-        :param all_lid_verlaufs: A list of LidVerlauf objects.
-        :return: A Dict that maps the first three primary key elements to a list of LidVerlauf objects.
-        """
-        result = {}
-        for lid_verlauf in all_lid_verlaufs:
-            key = lid_verlauf.primary_key()[:3]
-            if key not in result:
-                result[key] = []
-            # Insert the LidVerlauf into the list, at a place so that the list will be sorted by li_lfd_nr
-            for i, other_lid_verlauf in enumerate(result[key]):
-                if lid_verlauf.li_lfd_nr < other_lid_verlauf.li_lfd_nr:
-                    result[key].insert(i, lid_verlauf)
-                    break
-            else:
-                result[key].append(lid_verlauf)
-
-        return result
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, str | int | None]) -> "LidVerlauf":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "LidVerlauf":
         """
         Load the data from a dictionary.
         :param data: A dictionary with the data. It should contain:
@@ -300,17 +273,17 @@ class LidVerlauf(VdvBaseObjectWithONR):
         :return: The object itself.
         """
 
+        assert isinstance(data["LI_LFD_NR"], int), "The `li_lfd_nr` should be an integer."
         assert data["LI_LFD_NR"] > 0, "The `li_lfd_nr` should be a positive integer."
         assert isinstance(data["LI_NR"], int), "The `li_nr` should be an integer."
         assert isinstance(data["STR_LI_VAR"], str), "The `str_li_var` should be a string."
 
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
         assert data["ONR_TYP_NR"] > 0, "The `onr_typ_nr` should be a positive integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
         assert data["ORT_NR"] > 0, "The `ort_nr` should be a positive integer."
 
-        if "PRODUKTIV" in data:
-            assert isinstance(data["PRODUKTIV"], bool), "The `produktiv` should be a boolean."
-        else:
-            data["PRODUKTIV"] = None
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
 
         return LidVerlauf(
             basis_version=data["BASIS_VERSION"],
@@ -319,7 +292,6 @@ class LidVerlauf(VdvBaseObjectWithONR):
             str_li_var=data["STR_LI_VAR"],
             onr_typ_nr=data["ONR_TYP_NR"],
             ort_nr=data["ORT_NR"],
-            produktiv=data["PRODUKTIV"],
         )
 
 
@@ -333,7 +305,7 @@ class OrtHztf(VdvBaseObjectWithONR):
     """The number of the timing group. Part of primary key."""
 
     @property
-    def position_key(self):
+    def position_key(self) -> Tuple[int, int, int]:
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
     hp_hzt: timedelta
@@ -344,7 +316,13 @@ class OrtHztf(VdvBaseObjectWithONR):
         return self.basis_version, self.fgr_nr, self.onr_typ_nr, self.ort_nr
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "OrtHztf":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "OrtHztf":
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["FGR_NR"], int), "The `fgr_nr` should be an integer."
+        assert isinstance(data["HP_HZT"], int), "The `hp_hzt` should be an integer."
+
         return OrtHztf(
             basis_version=data["BASIS_VERSION"],
             onr_typ_nr=data["ONR_TYP_NR"],
@@ -367,7 +345,7 @@ class RecFrtHzt(VdvBaseObjectWithONR):
     """The Identifier of the trip. Part of primary key."""
 
     @property
-    def position_key(self):
+    def position_key(self) -> Tuple[int, int, int]:
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
     @property
@@ -378,7 +356,13 @@ class RecFrtHzt(VdvBaseObjectWithONR):
     """The time the trip waits at the stop in seconds."""
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecFrtHzt":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecFrtHzt":
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["FRT_FID"], int), "The `frt_fid` should be an integer."
+        assert isinstance(data["FRT_HZT_ZEIT"], int), "The `frt_hzt_zeit` should be an integer."
+
         return RecFrtHzt(
             basis_version=data["BASIS_VERSION"],
             onr_typ_nr=data["ONR_TYP_NR"],
@@ -448,7 +432,16 @@ class SelFztFeld(VdvBaseObjectWithONR):
         )
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "SelFztFeld":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "SelFztFeld":
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
+        assert isinstance(data["FGR_NR"], int), "The `fgr_nr` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["SEL_ZIEL_TYP"], int), "The `sel_ziel_typ` should be an integer."
+        assert isinstance(data["SEL_ZIEL"], int), "The `sel_ziel` should be an integer."
+        assert isinstance(data["SEL_FZT"], int), "The `sel_fzt` should be an integer."
+
         return SelFztFeld(
             basis_version=data["BASIS_VERSION"],
             bereich_nr=data["BEREICH_NR"],
@@ -514,7 +507,16 @@ class UebFzt(VdvBaseObjectWithONR):
         )
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "UebFzt":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "UebFzt":
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
+        assert isinstance(data["FGR_NR"], int), "The `fgr_nr` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["UEB_ZIEL_TYP"], int), "The `ueb_ziel_typ` should be an integer."
+        assert isinstance(data["UEB_ZIEL"], int), "The `ueb_ziel` should be an integer."
+        assert isinstance(data["UEB_FAHRZEIT"], int), "The `ueb_fahrzeit` should be an integer."
+
         return UebFzt(
             basis_version=data["BASIS_VERSION"],
             bereich_nr=data["BEREICH_NR"],
@@ -531,15 +533,6 @@ class UebFzt(VdvBaseObjectWithONR):
 class RecFrt(VdvBaseObject):
     """
     This seems to be the equivalent of a trip in the eflips-model world. It is a trip that is part of a line.
-    """
-
-    basis_version: str
-    """
-    The `BasisVerGueltigkeit.basis_version` this object belongs to. Currently not used. 
-
-    Later, it may be a good idea to allow the user to select a version of the schedule to import.
-
-    Restriction: Should be a nine-digit numeric string.
     """
 
     frt_fid: int
@@ -587,7 +580,7 @@ class RecFrt(VdvBaseObject):
         return self.basis_version, self.frt_fid
 
     @classmethod
-    def from_dict(cls, data: Dict[str, str | int | None]) -> "RecFrt":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecFrt":
         """
         Load the data from a dictionary.
 
@@ -604,14 +597,23 @@ class RecFrt(VdvBaseObject):
         :return: The object itself.
         """
 
+        assert isinstance(data["FRT_FID"], int), "The `frt_fid` should be an integer."
         assert data["FRT_FID"] > 0, "The `frt_fid` should be a positive integer."
+        assert isinstance(data["FRT_START"], int), "The `frt_start` should be an integer."
         assert data["FRT_START"] >= 0, "The `frt_start` should be a positive integer."
+        assert isinstance(data["LI_NR"], int), "The `li_nr` should be an integer."
         assert data["LI_NR"] > 0, "The `li_nr` should be a positive integer."
+        assert isinstance(data["TAGESART_NR"], int), "The `tagesart_nr` should be an integer."
         assert data["TAGESART_NR"] > 0, "The `tagesart_nr` should be a positive integer."
+        assert isinstance(data["FAHRTART_NR"], int), "The `fahrtart_nr` should be an integer."
         assert data["FAHRTART_NR"] > 0, "The `fahrtart_nr` should be a positive integer."
+        assert isinstance(data["FGR_NR"], int), "The `fgr_nr` should be an integer."
         assert data["FGR_NR"] > 0, "The `fgr_nr` should be a positive integer."
         assert isinstance(data["STR_LI_VAR"], str), "The `str_li_var` should be a six-character string."
+        assert isinstance(data["UM_UID"], int), "The `um_uid` should be an integer."
         assert data["UM_UID"] > 0, "The `um_uid` should be a positive integer."
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
 
         return RecFrt(
             basis_version=data["BASIS_VERSION"],
@@ -674,7 +676,9 @@ class RecOrt(VdvBaseObjectWithONR):
     """
 
     @property
-    def parent_station_primary_key(self):
+    def parent_station_primary_key(self) -> Tuple[int, int, int]:
+        assert self.ort_ref_ort is not None, "The `ort_ref_ort` cannot be none for this property."
+        assert self.ort_ref_ort_typ is not None, "The `ort_ref_ort_typ` cannot be none for this property."
         return self.basis_version, self.ort_ref_ort, self.ort_ref_ort_typ
 
     @property
@@ -682,15 +686,15 @@ class RecOrt(VdvBaseObjectWithONR):
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecOrt":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecOrt":
         """
         Load the data from a dictionary.
         """
 
         if "WGS_XKOOR" in data:
-            assert data["WGS_XKOOR"] is not None, "The `WGS_XKOOR` should not be None."
+            assert isinstance(data["WGS_XKOOR"], float), "The `WGS_XKOOR` should be a float."
             assert data["WGS_XKOOR"] != 0, "The `WGS_XKOOR` should not be 0."
-            longitude = data["WGS_XKOOR"]
+            longitude: Optional[float] = data["WGS_XKOOR"]
         elif "ORT_POS_LAENGE" in data:
             # According to spec: Latitude in WGS 84 Format:
             # gggmmssnnn (Gradzahl, Minuten,
@@ -703,6 +707,7 @@ class RecOrt(VdvBaseObjectWithONR):
 
             warnings.warn("Untested code.")
 
+            assert isinstance(data["ORT_POS_LAENGE"], int), "The `ORT_POS_LAENGE` should be an integer."
             assert data["ORT_POS_LAENGE"] is not None, "The `ORT_POS_LAENGE` should not be None."
             assert data["ORT_POS_LAENGE"] != 0, "The `ORT_POS_LAENGE` should not be 0."
             longitude_seconds = data["ORT_POS_LAENGE"] % 100000 / 1000
@@ -711,14 +716,15 @@ class RecOrt(VdvBaseObjectWithONR):
             longitude = longitude_degrees + longitude_minutes / 60 + longitude_seconds / 3600
         elif "ORT_POS_X" in data:
             # This seems to be longitude * 1e6
+            assert isinstance(data["ORT_POS_X"], int), "The `ORT_POS_X` should be an integer."
             longitude = data["ORT_POS_X"] / 1e6
         else:
             longitude = None
 
         if "WGS_YKOOR" in data:
-            assert data["WGS_YKOOR"] is not None, "The `WGS_YKOOR` should not be None."
+            assert isinstance(data["WGS_YKOOR"], float), "The `WGS_YKOOR` should be a float."
             assert data["WGS_YKOOR"] != 0, "The `WGS_YKOOR` should not be 0."
-            latitude = data["WGS_YKOOR"]
+            latitude: Optional[float] = data["WGS_YKOOR"]
         elif "ORT_POS_BREITE" in data:
             # According to Spec:
             # Longitude in WGS 84 Format:
@@ -732,6 +738,7 @@ class RecOrt(VdvBaseObjectWithONR):
 
             warnings.warn("Untested code.")
 
+            assert isinstance(data["ORT_POS_BREITE"], int), "The `ORT_POS_BREITE` should be an integer."
             assert data["ORT_POS_BREITE"] is not None, "The `ORT_POS_BREITE` should not be None."
             assert data["ORT_POS_BREITE"] != 0, "The `ORT_POS_BREITE` should not be 0."
             latitude_seconds = data["ORT_POS_BREITE"] % 100000 / 1000
@@ -740,16 +747,32 @@ class RecOrt(VdvBaseObjectWithONR):
             latitude = latitude_degrees + latitude_minutes / 60 + latitude_seconds / 3600
         elif "ORT_POS_Y" in data:
             # This seems to be latitude * 1e6
+            assert isinstance(data["ORT_POS_Y"], int), "The `ORT_POS_Y` should be an integer."
             latitude = data["ORT_POS_Y"] / 1e6
         else:
             latitude = None
 
         if "ORT_POS_HOEHE" in data:
-            altitude = data["ORT_POS_HOEHE"]
+            assert isinstance(data["ORT_POS_HOEHE"], int), "The `ORT_POS_HOEHE` should be an integer."
+            altitude: int | None = data["ORT_POS_HOEHE"]
         else:
-            # TODO: Enable
-            # altitude = get_altitude(latitude, longitude)
-            altitude = 9999
+            if latitude is not None and longitude is not None:
+                altitude = int(round(get_altitude((latitude, longitude))))
+            else:
+                altitude = None
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["ORT_NAME"], str), "The `ort_name` should be a string."
+        assert isinstance(data["ORT_REF_ORT"], int), "The `ort_ref_ort` should be an integer."
+        assert isinstance(data["ORT_REF_ORT_TYP"], int), "The `ort_ref_ort_typ` should be an integer."
+        if data["ORT_REF_ORT_KUERZEL"] is not None:
+            assert isinstance(data["ORT_REF_ORT_KUERZEL"], str), "The `ort_ref_ort_kuerzel` should be a string."
+            ort_ref_ort_kuerzel = data["ORT_REF_ORT_KUERZEL"]
+        else:
+            ort_ref_ort_kuerzel = None
+        assert isinstance(data["ORT_REF_ORT_NAME"], str), "The `ort_ref_ort_name` should be a string."
 
         return RecOrt(
             basis_version=data["BASIS_VERSION"],
@@ -792,7 +815,7 @@ class RecOrt(VdvBaseObjectWithONR):
                 # The name is the most used one of the ort_name fields
                 # Count how many times each name appears
                 name_counts = Counter([rec_ort.ort_name for rec_ort in rec_orts])
-                name = max(name_counts, key=name_counts.get)
+                name = name_counts.most_common(1)[0][0]
 
             if (
                 all([rec_ort.latitude is not None for rec_ort in rec_orts])
@@ -800,10 +823,16 @@ class RecOrt(VdvBaseObjectWithONR):
                 and all([rec_ort.altitude is not None for rec_ort in rec_orts])
             ):
                 # The latitude and longitude are the average of the coordinates
-                latitude = sum([rec_ort.latitude for rec_ort in rec_orts]) / len(rec_orts)
-                longitude = sum([rec_ort.longitude for rec_ort in rec_orts]) / len(rec_orts)
+                latitude = sum([rec_ort.latitude for rec_ort in rec_orts if rec_ort.latitude is not None]) / len(
+                    rec_orts
+                )
+                longitude = sum([rec_ort.longitude for rec_ort in rec_orts if rec_ort.longitude is not None]) / len(
+                    rec_orts
+                )
                 # The altitude is the average of the altitudes
-                altitude = sum([rec_ort.altitude for rec_ort in rec_orts]) / len(rec_orts)
+                altitude = sum([rec_ort.altitude for rec_ort in rec_orts if rec_ort.altitude is not None]) / len(
+                    rec_orts
+                )
 
                 geom = f"POINT({longitude} {latitude} {altitude})"
             else:
@@ -878,7 +907,7 @@ class RecSel(VdvBaseObjectWithONR):
         )
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecSel":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecSel":
         """
         Load the data from a dictionary.
 
@@ -894,6 +923,14 @@ class RecSel(VdvBaseObjectWithONR):
 
         :return: The object itself.
         """
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["SEL_ZIEL_TYP"], int), "The `sel_ziel_typ` should be an integer."
+        assert isinstance(data["SEL_ZIEL"], int), "The `sel_ziel` should be an integer."
+        assert isinstance(data["SEL_LAENGE"], int), "The `sel_laenge` should be an integer."
 
         return RecSel(
             basis_version=data["BASIS_VERSION"],
@@ -982,10 +1019,19 @@ class RecUeb(VdvBaseObject):
         return route
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecUeb":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecUeb":
         """
         Load the data from a dictionary.
         """
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
+        assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
+        assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
+        assert isinstance(data["UEB_ZIEL_TYP"], int), "The `ueb_ziel_typ` should be an integer."
+        assert isinstance(data["UEB_ZIEL"], int), "The `ueb_ziel` should be an integer."
+        assert isinstance(data["UEB_LAENGE"], int), "The `ueb_laenge` should be an integer."
+
         return RecUeb(
             basis_version=data["BASIS_VERSION"],
             bereich_nr=data["BEREICH_NR"],
@@ -1038,10 +1084,19 @@ class RecLid(VdvBaseObject):
         return self.basis_version, self.li_nr, self.str_li_var
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecLid":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecLid":
         """
         Load the data from a dictionary.
         """
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["LI_NR"], int), "The `li_nr` should be an integer."
+        assert isinstance(data["STR_LI_VAR"], str), "The `str_li_var` should be a string."
+        assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
+        assert isinstance(data["LI_KUERZEL"], str), "The `li_kuerzel` should be a string."
+        assert isinstance(data["LIDNAME"], str), "The `lidname` should be a string."
+        assert isinstance(data["ROUTEN_ART"], int), "The `routen_art` should be an integer."
+
         return RecLid(
             basis_version=data["BASIS_VERSION"],
             li_nr=data["LI_NR"],
@@ -1068,10 +1123,10 @@ class RecLid(VdvBaseObject):
     def to_route(
         self,
         scenario: Scenario,
-        lines_by_basis_version_andli_nr: Dict[Tuple[int, int], Line],
+        lines_by_basis_version_andli_nr: Dict[Tuple[int | date | str, ...], Line],
         rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[Tuple[int, int, int], RecOrt],
         lid_verlaufs_by_basis_version_and_li_nr_and_str_li_var: Dict[Tuple[int, int, str], List[LidVerlauf]],
-        stations_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[Tuple[int, int, int], Station],
+        stations_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[Tuple[int | date | str, ...], Station],
         rec_sel_by_basis_version_and_start_type_and_start_nr_and_end_type_and_end_nr: Dict[
             Tuple[int, int, int, int, int], RecSel
         ],
@@ -1082,6 +1137,8 @@ class RecLid(VdvBaseObject):
         :param scenario: The scenario to associate the route with
         :return: An instance of the Route class
         """
+        logger = logging.getLogger(__name__)
+
         route = Route(
             scenario=scenario,
             line=lines_by_basis_version_andli_nr[(self.basis_version, self.li_nr)],
@@ -1100,7 +1157,7 @@ class RecLid(VdvBaseObject):
 
             this_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
             if this_rec_ort.latitude is None or this_rec_ort.longitude is None:
-                warnings.warn("The latitude and longitude should not be None.")
+                logger.debug(f"Encountered a station without coordinates: {this_rec_ort}")
                 location = None
             else:
                 location = f"POINT({this_rec_ort.longitude} {this_rec_ort.latitude} {this_rec_ort.altitude})"
@@ -1131,7 +1188,7 @@ class RecLid(VdvBaseObject):
                 ]
                 rec_sels.append(this_rec_sel)
                 if this_rec_sel.sel_laenge is None or this_rec_sel.sel_laenge == 0:
-                    warnings.warn("The `sel_laenge` should not be None or 0.")
+                    logger.debug(f"Encountered a segment without length: {this_rec_sel.primary_key}")
                     # put a default value
                     elapsed_distance += 1
                 else:
@@ -1206,26 +1263,36 @@ class RecUmlauf(VdvBaseObject):
         return self.basis_version, self.tagesart_nr, self.um_uid
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "RecUmlauf":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecUmlauf":
         """
         Load the data from a dictionary.
         """
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["TAGESART_NR"], int), "The `tagesart_nr` should be an integer."
+        assert isinstance(data["UM_UID"], int), "The `um_uid` should be an integer."
+        assert isinstance(data["ANF_ORT"], int), "The `anf_ort` should be an integer."
+        assert isinstance(data["ANF_ONR_TYP"], int), "The `anf_onr_typ` should be an integer."
+        assert isinstance(data["END_ORT"], int), "The `end_ort` should be an integer."
+        assert isinstance(data["END_ONR_TYP"], int), "The `end_onr_typ` should be an integer."
 
         return RecUmlauf(
             basis_version=data["BASIS_VERSION"],
             tagesart_nr=data["TAGESART_NR"],
             um_uid=data["UM_UID"],
-            anf_ort=data["ANF_ORT"] if "ANF_ORT" in data.keys() and data["ANF_ORT"] != 0 else None,
-            anf_onr_typ=data["ANF_ONR_TYP"] if "ANF_ONR_TYP" in data.keys() and data["ANF_ONR_TYP"] != 0 else None,
-            end_ort=data["END_ORT"] if "END_ORT" in data.keys() and data["END_ORT"] != 0 else None,
-            end_onr_typ=data["END_ONR_TYP"] if "END_ONR_TYP" in data.keys() and data["END_ONR_TYP"] != 0 else None,
-            fzg_typ_nr=data["FZG_TYP_NR"] if "FZG_TYP_NR" in data.keys() and data["FZG_TYP_NR"] != 0 else None,
+            anf_ort=data["ANF_ORT"],
+            anf_onr_typ=data["ANF_ONR_TYP"],
+            end_ort=data["END_ORT"],
+            end_onr_typ=data["END_ONR_TYP"],
+            fzg_typ_nr=data["FZG_TYP_NR"]
+            if "FZG_TYP_NR" in data.keys() and isinstance(data["FZG_TYP_NR"], int) and data["FZG_TYP_NR"] != 0
+            else None,
         )
 
     def to_rotation(
         self,
         scenario: Scenario,
-        db_vehicle_types_by_vdv_pk: Dict[Tuple[int, int], VehicleType],
+        db_vehicle_types_by_vdv_pk: Dict[Tuple[int | date | str, ...], VehicleType],
         allow_opportunity_charging: bool = False,
         dummy_vehicle_type: Optional[VehicleType] = None,
     ) -> Rotation:
@@ -1304,16 +1371,43 @@ class MengeFzgTyp(VdvBaseObject):
         return self.basis_version, self.fzg_typ_nr
 
     @classmethod
-    def from_dict(cls, data: Dict[str, int | str | None]) -> "MengeFzgTyp":
+    def from_dict(cls, data: Dict[str, str | int | float | None]) -> "MengeFzgTyp":
         """
         Load the data from a dictionary.
         """
-        fzg_typ_text = data["FZG_TYP_TEXT"] if "FZG_TYP_TEXT" in data else None
-        str_fzg_typ = data["STR_FZG_TYP"] if "STR_FZG_TYP" in data else None
-        fzg_laenge = data["FZG_LAENGE"] if "FZG_LAENGE" in data else None
-        fzg_hoehe = data["FZG_TYP_HOEHE"] / 100 if "FZG_TYP_HOEHE" in data else None
-        fzg_breite = data["FZG_TYP_BREITE"] / 100 if "FZG_TYP_BREITE" in data else None
-        fzg_gewicht = data["FZG_TYP_GEWICHT"] if "FZG_TYP_GEWICHT" in data else None
+
+        if "FZG_TYP_TEXT" in data:
+            assert isinstance(data["FZG_TYP_TEXT"], str), "The `FZG_TYP_TEXT` should be a string."
+            fzg_typ_text = data["FZG_TYP_TEXT"]
+        else:
+            fzg_typ_text = None
+
+        if "STR_FZG_TYP" in data:
+            assert isinstance(data["STR_FZG_TYP"], str), "The `STR_FZG_TYP` should be a string."
+            str_fzg_typ = data["STR_FZG_TYP"]
+        else:
+            str_fzg_typ = None
+
+        if "FZG_LAENGE" in data:
+            assert isinstance(data["FZG_LAENGE"], int), "The `FZG_LAENGE` should be an integer."
+            fzg_laenge = data["FZG_LAENGE"]
+        else:
+            fzg_laenge = None
+        if "FZG_TYP_HOEHE" in data:
+            assert isinstance(data["FZG_TYP_HOEHE"], int), "The `FZG_TYP_HOEHE` should be an integer."
+            fzg_hoehe = data["FZG_TYP_HOEHE"] / 100
+        else:
+            fzg_hoehe = None
+        if "FZG_TYP_BREITE" in data:
+            assert isinstance(data["FZG_TYP_BREITE"], int), "The `FZG_TYP_BREITE` should be an integer."
+            fzg_breite = data["FZG_TYP_BREITE"] / 100
+        else:
+            fzg_breite = None
+        if "FZG_TYP_GEWICHT" in data:
+            assert isinstance(data["FZG_TYP_GEWICHT"], int), "The `FZG_TYP_GEWICHT` should be an integer."
+            fzg_gewicht = data["FZG_TYP_GEWICHT"]
+        else:
+            fzg_gewicht = None
 
         # zero values are also invalid here
         if (
@@ -1331,8 +1425,17 @@ class MengeFzgTyp(VdvBaseObject):
         if fzg_gewicht == 0:
             fzg_gewicht = None
 
-        verbrauch_distanz = data["VERBRAUCH_DISTANZ"] / 1000 if "VERBRAUCH_DISTANZ" in data else None
-        verbrauch_zeit = data["VERBRAUCH_ZEIT"] / 1000 if "VERBRAUCH_ZEIT" in data else None
+        if "VERBRAUCH_DISTANZ" in data:
+            assert isinstance(data["VERBRAUCH_DISTANZ"], int), "The `VERBRAUCH_DISTANZ` should be an integer."
+            verbrauch_distanz = data["VERBRAUCH_DISTANZ"] / 1000  # Wh per km to kWh per km
+        else:
+            verbrauch_distanz = None
+
+        if "VERBRAUCH_ZEIT" in data:
+            assert isinstance(data["VERBRAUCH_ZEIT"], int), "The `VERBRAUCH_ZEIT` should be an integer."
+            verbrauch_zeit = data["VERBRAUCH_ZEIT"] / 1000  # W to kW
+        else:
+            verbrauch_zeit = None
 
         if verbrauch_distanz is not None and verbrauch_zeit is not None:
             # We cannot do a distance and time consumption at the same time. For now, assume an average speed of 20 km_h
@@ -1341,6 +1444,11 @@ class MengeFzgTyp(VdvBaseObject):
             verbrauch = verbrauch_distanz + verbrauch_zeit * time_per_kilometer
         else:
             verbrauch = None
+
+        assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
+        assert isinstance(data["FZG_TYP_NR"], int), "The `fzg_typ_nr` should be an integer."
+        assert isinstance(data["FZG_TYP_TEXT"], str), "The `fzg_typ_text` should be a string."
+        assert isinstance(data["STR_FZG_TYP"], str), "The `str_fzg_typ` should be a string."
 
         return MengeFzgTyp(
             basis_version=data["BASIS_VERSION"],
