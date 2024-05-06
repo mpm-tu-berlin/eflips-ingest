@@ -1,5 +1,6 @@
 import os
 import pickle
+import shutil
 from dataclasses import dataclass
 from datetime import timedelta, datetime
 from enum import Enum
@@ -7,7 +8,6 @@ from pathlib import Path
 from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
 
-import shutil
 import sqlalchemy
 from eflips.model.depot import Depot, AssocPlanProcess, Process, Area, Plan, AreaType
 from eflips.model.general import Scenario, VehicleType
@@ -94,7 +94,7 @@ class DummyIngester(AbstractIngester):
             case _:
                 raise ValueError("Invalid bus type")
 
-    def prepare(  # type: ignore
+    def prepare(  # type: ignore[override]
         self,
         name: str,
         depot_count: int,
