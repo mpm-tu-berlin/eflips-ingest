@@ -1,6 +1,9 @@
+import json
+import logging
 import os
 from functools import lru_cache
 from numbers import Number
+from tempfile import gettempdir
 from typing import Tuple
 
 import requests
@@ -40,11 +43,26 @@ def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> float:
 
 
 # Since this is paid API we at least try to cache the results
-@lru_cache(maxsize=4096)
-def get_altitude_google(latlon: Tuple[Number, Number]) -> float:
+def get_altitude_google(latlon: Tuple[float, float]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
+    # Try loading the result from a cache file
+    cache_dir = os.path.join(gettempdir(), "eflips_cache")
+    # Create folders by lat, lon
+    this_coord_dir = os.path.join(cache_dir, f"{int(latlon[0]*100)},{int(latlon[1]*100)}")
+    os.makedirs(this_coord_dir, exist_ok=True)
+    this_coord_file = os.path.join(this_coord_dir, f"{latlon}.json")
+    if os.path.exists(this_coord_file):
+        with open(this_coord_file, "r") as f:
+            try:
+                loaded = json.load(f)
+                assert isinstance(loaded, float) or isinstance(loaded, int)
+                return float(loaded)
+            except json.JSONDecodeError:
+                logging.error(f"Failed to load cache file {this_coord_file}")
+                os.remove(this_coord_file)
+
     if not os.getenv("GOOGLE_MAPS_API_KEY"):
         raise ValueError("GOOGLE_MAPS_API_KEY not set")
 
@@ -56,10 +74,18 @@ def get_altitude_google(latlon: Tuple[Number, Number]) -> float:
     if data["status"] != "OK":
         raise ValueError("No elevation found")
     assert isinstance(data["results"][0]["elevation"], float) or isinstance(data["results"][0]["elevation"], int)
-    return data["results"][0]["elevation"]
+
+    altitude = data["results"][0]["elevation"]
+
+    # Save the result to a cache file
+    os.makedirs(this_coord_dir, exist_ok=True)
+    with open(this_coord_file, "w") as f:
+        json.dump(altitude, f)
+
+    return altitude
 
 
-def get_altitude(latlon: Tuple[Number, Number]) -> float:
+def get_altitude(latlon: Tuple[float, float]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
