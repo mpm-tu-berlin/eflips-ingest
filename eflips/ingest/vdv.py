@@ -600,36 +600,39 @@ class VdvIngester(AbstractIngester):
                             # Create a local midnight datetime object in the "Europe/Berlin" timezone
                             local_midnight = datetime.combine(the_date, time(0, 0), tzinfo=ZoneInfo("Europe/Berlin"))
 
-                            # Create the trip
-                            trip = Trip(
-                                scenario=scenario,
-                                route=route,
-                                departure_time=local_midnight + rec_frt.frt_start,
-                                arrival_time=local_midnight + elapsed_duration,
-                                trip_type=TripType.PASSENGER if rec_frt.fahrtart_nr == 1 else TripType.EMPTY,
-                            )
-
-                            # Create the stop times
-                            stop_times = []
-                            for i in range(len(route.assoc_route_stations)):
-                                station = route.assoc_route_stations[i].station
-                                arrival_time = local_midnight + arrival_time_from_start[i]
-                                dwell_duration = dwell_durations[i]
-                                stop_time = StopTime(
+                            # Create the trip, if it is a valid trip
+                            if elapsed_duration.total_seconds() > 0:
+                                trip = Trip(
                                     scenario=scenario,
-                                    trip=trip,
-                                    station=station,
-                                    arrival_time=arrival_time,
-                                    dwell_duration=dwell_duration,
+                                    route=route,
+                                    departure_time=local_midnight + rec_frt.frt_start,
+                                    arrival_time=local_midnight + elapsed_duration,
+                                    trip_type=TripType.PASSENGER if rec_frt.fahrtart_nr == 1 else TripType.EMPTY,
                                 )
-                                stop_times.append(stop_time)
 
-                            # Fix identical stop times
-                            fix_identical_stop_times(stop_times)
+                                # Create the stop times
+                                stop_times = []
+                                for i in range(len(route.assoc_route_stations)):
+                                    station = route.assoc_route_stations[i].station
+                                    arrival_time = local_midnight + arrival_time_from_start[i]
+                                    dwell_duration = dwell_durations[i]
+                                    stop_time = StopTime(
+                                        scenario=scenario,
+                                        trip=trip,
+                                        station=station,
+                                        arrival_time=arrival_time,
+                                        dwell_duration=dwell_duration,
+                                    )
+                                    stop_times.append(stop_time)
 
-                            # Look up the rotation using the basis_version and um_uid
-                            trip.rotation = rotation
-                            session.add(trip)
+                                    # Fix identical stop times
+                                    fix_identical_stop_times(stop_times)
+
+                                    # Look up the rotation using the basis_version and um_uid
+                                    trip.rotation = rotation
+                                    session.add(trip)
+                            else:
+                                logger.warning(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
                 # Delete all rotations in this scenario with no trips
                 session.flush()
