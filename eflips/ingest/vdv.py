@@ -407,6 +407,14 @@ class VdvIngester(AbstractIngester):
                         sel_fzt_felds_by_pk[pk] = []
                     sel_fzt_felds_by_pk[pk].append(this_sel_fzt_feld)
 
+                # We also need to create a slighltly relaxes sel_fzt_felds_by_pk, where we only have one entry per pk
+                sel_fzt_felds_by_relaxed_pk: Dict[Tuple[int | date | str, ...], List[SelFztFeld]] = {}
+                for x in sel_fzt_felds:
+                    relaxed_pk = (x.basis_version, x.bereich_nr, x.onr_typ_nr, x.ort_nr, x.sel_ziel_typ, x.sel_ziel)
+                    if relaxed_pk not in sel_fzt_felds_by_relaxed_pk:
+                        sel_fzt_felds_by_relaxed_pk[relaxed_pk] = []
+                    sel_fzt_felds_by_relaxed_pk[relaxed_pk].append(x)
+
                 assert all(isinstance(x, RecFrt) for x in all_data[VDV_Table_Name.REC_FRT])
                 rec_frts = [x for x in all_data[VDV_Table_Name.REC_FRT] if isinstance(x, RecFrt)]
 
@@ -458,11 +466,8 @@ class VdvIngester(AbstractIngester):
                         else:
                             logger.debug(f"Could not find SelFztFeld for {sel_fzt_feld_pk}")
                             # Find one by relaxing the constraints
-                            sel_fzt_feld = [
-                                x
-                                for x in sel_fzt_felds
-                                if (x.basis_version, x.bereich_nr, x.onr_typ_nr, x.ort_nr, x.sel_ziel_typ, x.sel_ziel)
-                                == (
+                            sel_fzt_feld = sel_fzt_felds_by_relaxed_pk[
+                                (
                                     rec_sel.basis_version,
                                     rec_sel.bereich_nr,
                                     rec_sel.onr_typ_nr,
