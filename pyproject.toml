@@ -7,8 +7,8 @@ authors = [
 ]
 readme = "README.md"
 license = "AGPL-3.0-or-later"
-homepage = "https://github.com/mpm-tu-berlin/eflips-import"
-repository = "https://github.com/mpm-tu-berlin/eflips-import"
+homepage = "https://github.com/mpm-tu-berlin/eflips-ingest"
+repository = "https://github.com/mpm-tu-berlin/eflips-ingest"
 packages = [{ include = "eflips/ingest" }]
 include = ["LICENSE.md"]
 
