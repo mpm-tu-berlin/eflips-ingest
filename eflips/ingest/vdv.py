@@ -625,12 +625,12 @@ class VdvIngester(AbstractIngester):
                                     )
                                     stop_times.append(stop_time)
 
-                                    # Fix identical stop times
-                                    fix_identical_stop_times(stop_times)
+                                # Fix identical stop times
+                                fix_identical_stop_times(stop_times)
 
-                                    # Look up the rotation using the basis_version and um_uid
-                                    trip.rotation = rotation
-                                    session.add(trip)
+                                # Look up the rotation using the basis_version and um_uid
+                                trip.rotation = rotation
+                                session.add(trip)
                             else:
                                 logger.warning(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
