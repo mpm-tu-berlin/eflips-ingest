@@ -576,6 +576,7 @@ class VdvIngester(AbstractIngester):
                     ### CREATE THE TRIP
                     # We need to do this on all days that have the same tagesart as the rec_frt
                     # We need to find the tagesart of the rec_frt
+                    session.flush()
                     for firmenkalender in firmenkalenders:
                         if firmenkalender.tagesart_nr == rec_frt.tagesart_nr:
                             the_date = firmenkalender.betriebstag
@@ -595,6 +596,7 @@ class VdvIngester(AbstractIngester):
                                     trips=[],
                                     allow_opportunity_charging=orig_rotation.allow_opportunity_charging,
                                 )
+                                session.flush()
                                 rotations_by_vdv_pk_and_date[vdv_pk_and_date] = rotation
 
                             # Create a local midnight datetime object in the "Europe/Berlin" timezone
@@ -631,6 +633,10 @@ class VdvIngester(AbstractIngester):
                                 # Look up the rotation using the basis_version and um_uid
                                 trip.rotation = rotation
                                 session.add(trip)
+                                session.flush((trip, *stop_times, rotation))
+                                #for stop_time in stop_times:
+                                #    session.expunge(stop_time)
+                                session.expunge(trip)
                             else:
                                 logger.warning(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
