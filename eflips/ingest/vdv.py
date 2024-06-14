@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Dict, Callable, Tuple, Optional, List
 from uuid import UUID, uuid4
 from zipfile import ZipFile
-from zoneinfo import ZoneInfo
 
+import pytz
 from eflips.model import VehicleType, Scenario, Rotation, Station, Line, Route, Trip, TripType, StopTime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -600,10 +600,11 @@ class VdvIngester(AbstractIngester):
                                 rotations_by_vdv_pk_and_date[vdv_pk_and_date] = rotation
 
                             # Create a local midnight datetime object in the "Europe/Berlin" timezone
-                            local_midnight = datetime.combine(the_date, time(0, 0), tzinfo=ZoneInfo("Europe/Berlin"))
+                            tz = pytz.timezone("Europe/Berlin")
+                            local_midnight = tz.localize(datetime.combine(the_date, time(0, 0)))
 
                             # Create the trip, if it is a valid trip
-                            if elapsed_duration.total_seconds() > 0:
+                            if rec_frt.frt_start.total_seconds() != elapsed_duration.total_seconds():
                                 trip = Trip(
                                     scenario=scenario,
                                     route=route,
@@ -634,11 +635,11 @@ class VdvIngester(AbstractIngester):
                                 trip.rotation = rotation
                                 session.add(trip)
                                 session.flush((trip, *stop_times, rotation))
-                                #for stop_time in stop_times:
+                                # for stop_time in stop_times:
                                 #    session.expunge(stop_time)
                                 session.expunge(trip)
                             else:
-                                logger.warning(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
+                                raise ValueError(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
                 # Delete all rotations in this scenario with no trips
                 session.flush()
