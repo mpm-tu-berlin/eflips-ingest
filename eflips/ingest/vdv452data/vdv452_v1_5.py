@@ -5,7 +5,6 @@ Generator: DataclassGenerator
 See: https://xsdata.readthedocs.io/
 """
 import logging
-import warnings
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass
@@ -695,7 +694,7 @@ class RecOrt(VdvBaseObjectWithONR):
             assert isinstance(data["WGS_XKOOR"], float), "The `WGS_XKOOR` should be a float."
             assert data["WGS_XKOOR"] != 0, "The `WGS_XKOOR` should not be 0."
             longitude: Optional[float] = data["WGS_XKOOR"]
-        elif "ORT_POS_LAENGE" in data:
+        elif "ORT_POS_LAENGE" in data and data["ORT_POS_LAENGE"] != 0:
             # According to spec: Latitude in WGS 84 Format:
             # gggmmssnnn (Gradzahl, Minuten,
             # Sekunden mit 3
@@ -704,8 +703,6 @@ class RecOrt(VdvBaseObjectWithONR):
             # Breite)
             # Ein Minuszeichen (-) heißt s.B.
             # (südliche Breite))
-
-            warnings.warn("Untested code.")
 
             assert isinstance(data["ORT_POS_LAENGE"], int), "The `ORT_POS_LAENGE` should be an integer."
             assert data["ORT_POS_LAENGE"] is not None, "The `ORT_POS_LAENGE` should not be None."
@@ -725,7 +722,7 @@ class RecOrt(VdvBaseObjectWithONR):
             assert isinstance(data["WGS_YKOOR"], float), "The `WGS_YKOOR` should be a float."
             assert data["WGS_YKOOR"] != 0, "The `WGS_YKOOR` should not be 0."
             latitude: Optional[float] = data["WGS_YKOOR"]
-        elif "ORT_POS_BREITE" in data:
+        elif "ORT_POS_BREITE" in data and data["ORT_POS_BREITE"] != 0:
             # According to Spec:
             # Longitude in WGS 84 Format:
             # gggmmssnnn (Gradzahl, Minuten,
@@ -735,8 +732,6 @@ class RecOrt(VdvBaseObjectWithONR):
             # Länge)
             # Ein Minuszeichen (-) heißt w.L.
             # (westliche Länge))
-
-            warnings.warn("Untested code.")
 
             assert isinstance(data["ORT_POS_BREITE"], int), "The `ORT_POS_BREITE` should be an integer."
             assert data["ORT_POS_BREITE"] is not None, "The `ORT_POS_BREITE` should not be None."
@@ -1094,7 +1089,6 @@ class RecLid(VdvBaseObject):
         assert isinstance(data["STR_LI_VAR"], str), "The `str_li_var` should be a string."
         assert isinstance(data["BEREICH_NR"], int), "The `bereich_nr` should be an integer."
         assert isinstance(data["LI_KUERZEL"], str), "The `li_kuerzel` should be a string."
-        assert isinstance(data["LIDNAME"], str), "The `lidname` should be a string."
         assert isinstance(data["ROUTEN_ART"], int), "The `routen_art` should be an integer."
 
         return RecLid(
@@ -1103,7 +1097,7 @@ class RecLid(VdvBaseObject):
             str_li_var=data["STR_LI_VAR"],
             bereich_nr=data["BEREICH_NR"],
             li_kuerzel=data["LI_KUERZEL"],
-            lidname=data["LIDNAME"],
+            lidname=str(data["LIDNAME"]) if data["LIDNAME"] is not None else "N/A",
             routen_art=RoutenArt(data["ROUTEN_ART"]),
         )
 
