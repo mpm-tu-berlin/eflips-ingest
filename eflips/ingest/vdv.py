@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Dict, Callable, Tuple, Optional, List
 from uuid import UUID, uuid4
 from zipfile import ZipFile
-from zoneinfo import ZoneInfo
 
+import pytz
 from eflips.model import VehicleType, Scenario, Rotation, Station, Line, Route, Trip, TripType, StopTime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -407,6 +407,14 @@ class VdvIngester(AbstractIngester):
                         sel_fzt_felds_by_pk[pk] = []
                     sel_fzt_felds_by_pk[pk].append(this_sel_fzt_feld)
 
+                # We also need to create a slighltly relaxes sel_fzt_felds_by_pk, where we only have one entry per pk
+                sel_fzt_felds_by_relaxed_pk: Dict[Tuple[int | date | str, ...], List[SelFztFeld]] = {}
+                for x in sel_fzt_felds:
+                    relaxed_pk = (x.basis_version, x.bereich_nr, x.onr_typ_nr, x.ort_nr, x.sel_ziel_typ, x.sel_ziel)
+                    if relaxed_pk not in sel_fzt_felds_by_relaxed_pk:
+                        sel_fzt_felds_by_relaxed_pk[relaxed_pk] = []
+                    sel_fzt_felds_by_relaxed_pk[relaxed_pk].append(x)
+
                 assert all(isinstance(x, RecFrt) for x in all_data[VDV_Table_Name.REC_FRT])
                 rec_frts = [x for x in all_data[VDV_Table_Name.REC_FRT] if isinstance(x, RecFrt)]
 
@@ -458,11 +466,8 @@ class VdvIngester(AbstractIngester):
                         else:
                             logger.debug(f"Could not find SelFztFeld for {sel_fzt_feld_pk}")
                             # Find one by relaxing the constraints
-                            sel_fzt_feld = [
-                                x
-                                for x in sel_fzt_felds
-                                if (x.basis_version, x.bereich_nr, x.onr_typ_nr, x.ort_nr, x.sel_ziel_typ, x.sel_ziel)
-                                == (
+                            sel_fzt_feld = sel_fzt_felds_by_relaxed_pk[
+                                (
                                     rec_sel.basis_version,
                                     rec_sel.bereich_nr,
                                     rec_sel.onr_typ_nr,
@@ -591,40 +596,45 @@ class VdvIngester(AbstractIngester):
                                     allow_opportunity_charging=orig_rotation.allow_opportunity_charging,
                                 )
                                 rotations_by_vdv_pk_and_date[vdv_pk_and_date] = rotation
+                                session.add(rotation)
 
                             # Create a local midnight datetime object in the "Europe/Berlin" timezone
-                            local_midnight = datetime.combine(the_date, time(0, 0), tzinfo=ZoneInfo("Europe/Berlin"))
+                            tz = pytz.timezone("Europe/Berlin")
+                            local_midnight = tz.localize(datetime.combine(the_date, time(0, 0)))
 
-                            # Create the trip
-                            trip = Trip(
-                                scenario=scenario,
-                                route=route,
-                                departure_time=local_midnight + rec_frt.frt_start,
-                                arrival_time=local_midnight + elapsed_duration,
-                                trip_type=TripType.PASSENGER if rec_frt.fahrtart_nr == 1 else TripType.EMPTY,
-                            )
-
-                            # Create the stop times
-                            stop_times = []
-                            for i in range(len(route.assoc_route_stations)):
-                                station = route.assoc_route_stations[i].station
-                                arrival_time = local_midnight + arrival_time_from_start[i]
-                                dwell_duration = dwell_durations[i]
-                                stop_time = StopTime(
+                            # Create the trip, if it is a valid trip
+                            if rec_frt.frt_start.total_seconds() != elapsed_duration.total_seconds():
+                                trip = Trip(
                                     scenario=scenario,
-                                    trip=trip,
-                                    station=station,
-                                    arrival_time=arrival_time,
-                                    dwell_duration=dwell_duration,
+                                    route=route,
+                                    departure_time=local_midnight + rec_frt.frt_start,
+                                    arrival_time=local_midnight + elapsed_duration,
+                                    trip_type=TripType.PASSENGER if rec_frt.fahrtart_nr == 1 else TripType.EMPTY,
                                 )
-                                stop_times.append(stop_time)
 
-                            # Fix identical stop times
-                            fix_identical_stop_times(stop_times)
+                                # Create the stop times
+                                stop_times = []
+                                for i in range(len(route.assoc_route_stations)):
+                                    station = route.assoc_route_stations[i].station
+                                    arrival_time = local_midnight + arrival_time_from_start[i]
+                                    dwell_duration = dwell_durations[i]
+                                    stop_time = StopTime(
+                                        scenario=scenario,
+                                        trip=trip,
+                                        station=station,
+                                        arrival_time=arrival_time,
+                                        dwell_duration=dwell_duration,
+                                    )
+                                    stop_times.append(stop_time)
 
-                            # Look up the rotation using the basis_version and um_uid
-                            trip.rotation = rotation
-                            session.add(trip)
+                                # Fix identical stop times
+                                fix_identical_stop_times(stop_times)
+
+                                # Look up the rotation using the basis_version and um_uid
+                                trip.rotation = rotation
+                                session.add(trip)
+                            else:
+                                raise ValueError(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
                 # Delete all rotations in this scenario with no trips
                 session.flush()
