@@ -278,8 +278,13 @@ class VdvIngester(AbstractIngester):
         engine = create_engine(self.database_url)
         with Session(engine) as session:
             try:
-                scenario = Scenario(name=f"Created from VDV data with UUID {uuid}")
-                session.add(scenario)
+                # Create the scenario, if it does not exist
+                scenario_q = session.query(Scenario).filter(Scenario.task_id == str(uuid))
+                if scenario_q.count() == 0:
+                    scenario = Scenario(name=f"Created from VDV data with UUID {uuid}")
+                    session.add(scenario)
+                else:
+                    scenario = scenario_q.one()
 
                 # Vehicle Types
                 vehicle_types_by_vdv_pk: Dict[Tuple[int | date | str, ...], VehicleType] = {}
