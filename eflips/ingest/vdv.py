@@ -596,6 +596,7 @@ class VdvIngester(AbstractIngester):
                                     allow_opportunity_charging=orig_rotation.allow_opportunity_charging,
                                 )
                                 rotations_by_vdv_pk_and_date[vdv_pk_and_date] = rotation
+                                session.add(rotation)
 
                             # Create a local midnight datetime object in the "Europe/Berlin" timezone
                             tz = pytz.timezone("Europe/Berlin")
@@ -636,6 +637,7 @@ class VdvIngester(AbstractIngester):
                                 raise ValueError(f"Trip {rec_frt.frt_fid} has a duration of 0 seconds. Skipping.")
 
                 # Delete all rotations in this scenario with no trips
+                session.flush()
                 for rotation in scenario.rotations:
                     if len(rotation.trips) == 0:
                         session.delete(rotation)
