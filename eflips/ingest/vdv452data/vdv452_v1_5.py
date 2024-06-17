@@ -1097,7 +1097,7 @@ class RecLid(VdvBaseObject):
             str_li_var=data["STR_LI_VAR"],
             bereich_nr=data["BEREICH_NR"],
             li_kuerzel=data["LI_KUERZEL"],
-            lidname=data["LIDNAME"] if data["LIDNAME"] is not None else "N/A",
+            lidname=str(data["LIDNAME"]) if data["LIDNAME"] is not None else "N/A",
             routen_art=RoutenArt(data["ROUTEN_ART"]),
         )
 
