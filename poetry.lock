@@ -1300,6 +1300,17 @@ files = [
 ]
 
 [[package]]
+name = "types-pytz"
+version = "2024.1.0.20240417"
+description = "Typing stubs for pytz"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "types-pytz-2024.1.0.20240417.tar.gz", hash = "sha256:6810c8a1f68f21fdf0f4f374a432487c77645a0ac0b31de4bf4690cf21ad3981"},
+    {file = "types_pytz-2024.1.0.20240417-py3-none-any.whl", hash = "sha256:8335d443310e2db7b74e007414e74c4f53b67452c0cb0d228ca359ccfba59659"},
+]
+
+[[package]]
 name = "types-requests"
 version = "2.32.0.20240602"
 description = "Typing stubs for requests"
@@ -1413,4 +1424,4 @@ test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "bd0b3ee24f487fc503a96af7c67ba3a517c8efe9c9375c6610e143ee67631b84"
+content-hash = "d6461ecc5da8219303b0b9d27eb6c448542c2ee0c372e50e9b9187bd01eaa1f6"
