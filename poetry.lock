@@ -1424,4 +1424,4 @@ test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "d6461ecc5da8219303b0b9d27eb6c448542c2ee0c372e50e9b9187bd01eaa1f6"
+content-hash = "e8af69c778dce7a0b889db26ec1595078ff8cb84664ff3ba6c8a2a97b77660a1"
