@@ -1393,7 +1393,10 @@ def ingest_bvgxml(
     print(
         """
     The import is complete. You may still want to:
-    - Figure out what to do with  the Rotations starting or ending at an "Abstellfläche"
+    - Remove some rotations that are not relevant
+    - Merge the vehicle types into three major types
+    - Figure out what happens with the rotations at the very end of the schedule. There seem to be some borked
+      ones there.
     """
     )
 
