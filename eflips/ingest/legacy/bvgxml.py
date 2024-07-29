@@ -1384,6 +1384,7 @@ def ingest_bvgxml(
 
     # Commit and close this session
     session.commit()
+    session.close()
 
     # STEP 11: Fix the max sequence numbers
     print(f"(11/{TOTAL_STEPS}) Fixing max sequence numbers")
