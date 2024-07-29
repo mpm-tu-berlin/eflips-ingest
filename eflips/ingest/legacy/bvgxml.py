@@ -1336,6 +1336,10 @@ def ingest_bvgxml(
         # Get the median of the assoc_route_stations
         recenter_station(station, session)
 
+    # Flush the session to convert the geoms from string to binary
+    session.flush()
+    session.expire_all()
+
     ### STEP 7: Fix the routes with very large distances:
     # There are some routes which have a distance of zero even once the last point is reached
     # We set their distance to a very large number. Now we set it to the geometric distance between the first and last
@@ -1360,15 +1364,15 @@ def ingest_bvgxml(
             route.assoc_route_stations[-1].elapsed_distance = dist
         route.name = "CHECK DISTANCE: " + route.name
 
-    session.commit()
-    session.expunge_all()
+    session.flush()
+    session.expire_all()
 
     # STEP 8: Merge identical stations
     print(f"(8/{TOTAL_STEPS}) Merging identical stations")
     merge_identical_stations(scenario_id, session)
 
-    session.commit()
-    session.expunge_all()
+    session.flush()
+    session.expire_all()
 
     # STEP 9: Combine rotations with the same name
     print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
@@ -1380,7 +1384,6 @@ def ingest_bvgxml(
 
     # Commit and close this session
     session.commit()
-    session.close()
 
     # STEP 11: Fix the max sequence numbers
     print(f"(11/{TOTAL_STEPS}) Fixing max sequence numbers")
