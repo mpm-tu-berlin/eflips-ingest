@@ -1079,7 +1079,14 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
     :param session: an open database session
     :return: Nothing. The rotations are updated in the database
     """
-    DEPOT_NAME = "Betriebshof"
+
+    def is_depot(name: str) -> bool:
+        """
+        Check if the name of a station contains "Betriebshof" or "Abstellfläche"
+        :param name: The name of the station
+        :return: True if the name contains "Betriebshof" or "Abstellfläche", False otherwise
+        """
+        return "Betriebshof" in name or "Abstellfläche" in name
 
     rotation_names = (
         session.query(eflips.model.Rotation.name)
@@ -1106,22 +1113,22 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             first_station_departure_time = rotation.trips[0].departure_time
             last_station_arrival_time = rotation.trips[-1].arrival_time
 
-            if DEPOT_NAME in first_station_name and DEPOT_NAME in last_station_name:
+            if is_depot(first_station_name) and is_depot(last_station_name):
                 # This is a rotation that starts and ends at the depot
                 # We don't need to merge it with anything
                 continue
-            elif DEPOT_NAME in first_station_name and DEPOT_NAME not in last_station_name:
+            elif is_depot(first_station_name) and not is_depot(last_station_name):
                 # This rotation starts at the depot and ends somewhere else
                 # Start a new list after appending the current list to the list of lists
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = [rotation.id]
-            elif DEPOT_NAME not in first_station_name and DEPOT_NAME in last_station_name:
+            elif not is_depot(first_station_name) and is_depot(last_station_name):
                 # This rotation starts somewhere else and ends at the depot
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = []
-            elif DEPOT_NAME not in first_station_name and DEPOT_NAME not in last_station_name:
+            elif not is_depot(first_station_name) and not is_depot(last_station_name):
                 # This rotation starts and ends somewhere else
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
@@ -1144,8 +1151,8 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             # And both must contain "Betriebshof"
             if (
                 rotations[0].trips[0].route.departure_station.name != rotations[-1].trips[-1].route.arrival_station.name
-                or "Betriebshof" not in rotations[0].trips[0].route.departure_station.name
-                or "Betriebshof" not in rotations[-1].trips[-1].route.arrival_station.name
+                or not (is_depot(rotations[0].trips[0].route.departure_station.name))
+                or not (is_depot(rotations[-1].trips[-1].route.arrival_station.name))
             ):
                 # If the merge is not possible we delete these rotations
                 for rotation in rotations:
