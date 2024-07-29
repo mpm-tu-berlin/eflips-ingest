@@ -127,7 +127,7 @@ def create_stations(linienfahrplan: Linienfahrplan, scenario_id: int, session: S
 def add_or_ret_line(scenario_id: int, name: str, session: Session) -> eflips.model.Line:
     line = (
         session.query(eflips.model.Line)
-        .filter(eflips.model.Scenario.id == scenario_id)
+        .filter(eflips.model.Line.scenario_id == scenario_id)
         .filter(eflips.model.Line.name == name)
         .one_or_none()
     )
