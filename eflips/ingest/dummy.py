@@ -286,7 +286,6 @@ class DummyIngester(AbstractIngester):
             name="Entenhausen Depot Area",
             depot=depot,
             area_type=AreaType.LINE,
-            row_count=2,
             capacity=6,
             vehicle_type=vehicle_type,
         )

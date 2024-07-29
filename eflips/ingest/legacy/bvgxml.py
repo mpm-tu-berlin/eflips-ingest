@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple, Union
 import eflips.model
 import fire  # type: ignore
 import psycopg2
-from eflips.model import ConsistencyWarning
+from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape
@@ -127,7 +127,7 @@ def create_stations(linienfahrplan: Linienfahrplan, scenario_id: int, session: S
 def add_or_ret_line(scenario_id: int, name: str, session: Session) -> eflips.model.Line:
     line = (
         session.query(eflips.model.Line)
-        .filter(eflips.model.Scenario.id == scenario_id)
+        .filter(eflips.model.Line.scenario_id == scenario_id)
         .filter(eflips.model.Line.name == name)
         .one_or_none()
     )
@@ -1014,47 +1014,59 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     :param session: An open database session
     :return: Nothing. The stations are updated in the database
     """
-    station_names = (
-        session.query(eflips.model.Station.name, func.count())
-        .filter(eflips.model.Station.scenario_id == scenario_id)
-        .group_by(eflips.model.Station.name)
-        .all()
-    )
-    for station_name, count in station_names:
-        if count == 1:
+    """
+    Merge all stations where the first four characters of the short name are the same.
+    Also has special handling for three-letter short names, where the first three characters are the same followed by
+    an underscore.
+
+    Also very special handling for Berlin Airport, where the short name is "BER1".
+
+    :param scenario:
+    :param session:
+    :return: Nothing. Databases are updated in place.
+    """
+    # Load all stations, grouped by the first four characters of the short name
+    # If the short name contains an unserscore, we take all the characters before the underscore
+    stations_by_short_name: Dict[str, List[Station]] = {}
+    for station in session.query(Station).filter(Station.scenario_id == scenario_id).all():
+        if station.name_short is None:
             continue
-        all_stations_for_name = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.name == station_name)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .order_by(eflips.model.Station.id)
-            .all()
-        )
-        # Keep the ID of the first station
-        first_station_id = all_stations_for_name[0].id
-        # For the Other IDs, update all objects that reference them to reference the first station
-        for station in all_stations_for_name[1:]:
-            # Update the routes
-            session.query(eflips.model.Route).filter(eflips.model.Route.departure_station_id == station.id).update(
-                {"departure_station_id": first_station_id}
-            )
-            session.query(eflips.model.Route).filter(eflips.model.Route.arrival_station_id == station.id).update(
-                {"arrival_station_id": first_station_id}
-            )
+        short_name = station.name_short
+        if "_" in station.name_short:  # Special case for three-letter short names followed by an underscore
+            short_name = station.name_short.split("_")[0]
+        short_name = short_name[:4]
+        if short_name == "BER1":
+            short_name = "BER"  # Special case for Berlin Airport
+        if short_name not in stations_by_short_name:
+            stations_by_short_name[short_name] = []
+        stations_by_short_name[short_name].append(station)
 
-            # Update the AssocRouteStations
-            session.query(eflips.model.AssocRouteStation).filter(
-                eflips.model.AssocRouteStation.station_id == station.id
-            ).update({"station_id": first_station_id})
+    for short_name, stations in tqdm(stations_by_short_name.items()):
+        if len(stations) > 1:
+            # Merge the stations
+            # The main station will be the one with the shortest name
+            main_station = min(stations, key=lambda station: len(station.name))
+            for other_station in stations:
+                if other_station != main_station:
+                    other_station_geom = other_station.geom
+                    with session.no_autoflush:
+                        # Update all routes, trips, and stoptimes containing the next station to point to the first station instead
+                        session.query(Route).filter(Route.departure_station_id == other_station.id).update(
+                            {"departure_station_id": main_station.id}
+                        )
+                        session.query(Route).filter(Route.arrival_station_id == other_station.id).update(
+                            {"arrival_station_id": main_station.id}
+                        )
 
-            # Update the stop times
-            session.query(eflips.model.StopTime).filter(eflips.model.StopTime.station_id == station.id).update(
-                {"station_id": first_station_id}
-            )
+                        session.query(AssocRouteStation).filter(
+                            AssocRouteStation.station_id == other_station.id
+                        ).update({"station_id": main_station.id, "location": other_station_geom})
 
-            # Delete the station
-            session.refresh(station)  # Refresh the station object to get the updated routes
-            session.delete(station)
+                        session.query(StopTime).filter(StopTime.station_id == other_station.id).update(
+                            {"station_id": main_station.id}
+                        )
+                    session.flush()
+                    session.delete(other_station)
 
 
 def merge_identical_rotations(scenario_id: int, session: Session) -> None:
@@ -1067,7 +1079,14 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
     :param session: an open database session
     :return: Nothing. The rotations are updated in the database
     """
-    DEPOT_NAME = "Betriebshof"
+
+    def is_depot(name: str) -> bool:
+        """
+        Check if the name of a station contains "Betriebshof" or "Abstellfläche"
+        :param name: The name of the station
+        :return: True if the name contains "Betriebshof" or "Abstellfläche", False otherwise
+        """
+        return "Betriebshof" in name or "Abstellfläche" in name
 
     rotation_names = (
         session.query(eflips.model.Rotation.name)
@@ -1094,22 +1113,22 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             first_station_departure_time = rotation.trips[0].departure_time
             last_station_arrival_time = rotation.trips[-1].arrival_time
 
-            if DEPOT_NAME in first_station_name and DEPOT_NAME in last_station_name:
+            if is_depot(first_station_name) and is_depot(last_station_name):
                 # This is a rotation that starts and ends at the depot
                 # We don't need to merge it with anything
                 continue
-            elif DEPOT_NAME in first_station_name and DEPOT_NAME not in last_station_name:
+            elif is_depot(first_station_name) and not is_depot(last_station_name):
                 # This rotation starts at the depot and ends somewhere else
                 # Start a new list after appending the current list to the list of lists
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = [rotation.id]
-            elif DEPOT_NAME not in first_station_name and DEPOT_NAME in last_station_name:
+            elif not is_depot(first_station_name) and is_depot(last_station_name):
                 # This rotation starts somewhere else and ends at the depot
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = []
-            elif DEPOT_NAME not in first_station_name and DEPOT_NAME not in last_station_name:
+            elif not is_depot(first_station_name) and not is_depot(last_station_name):
                 # This rotation starts and ends somewhere else
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
@@ -1132,8 +1151,8 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             # And both must contain "Betriebshof"
             if (
                 rotations[0].trips[0].route.departure_station.name != rotations[-1].trips[-1].route.arrival_station.name
-                or "Betriebshof" not in rotations[0].trips[0].route.departure_station.name
-                or "Betriebshof" not in rotations[-1].trips[-1].route.arrival_station.name
+                or not (is_depot(rotations[0].trips[0].route.departure_station.name))
+                or not (is_depot(rotations[-1].trips[-1].route.arrival_station.name))
             ):
                 # If the merge is not possible we delete these rotations
                 for rotation in rotations:
@@ -1317,6 +1336,10 @@ def ingest_bvgxml(
         # Get the median of the assoc_route_stations
         recenter_station(station, session)
 
+    # Flush the session to convert the geoms from string to binary
+    session.flush()
+    session.expire_all()
+
     ### STEP 7: Fix the routes with very large distances:
     # There are some routes which have a distance of zero even once the last point is reached
     # We set their distance to a very large number. Now we set it to the geometric distance between the first and last
@@ -1341,15 +1364,15 @@ def ingest_bvgxml(
             route.assoc_route_stations[-1].elapsed_distance = dist
         route.name = "CHECK DISTANCE: " + route.name
 
-    session.commit()
-    session.expunge_all()
+    session.flush()
+    session.expire_all()
 
     # STEP 8: Merge identical stations
     print(f"(8/{TOTAL_STEPS}) Merging identical stations")
     merge_identical_stations(scenario_id, session)
 
-    session.commit()
-    session.expunge_all()
+    session.flush()
+    session.expire_all()
 
     # STEP 9: Combine rotations with the same name
     print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
@@ -1370,7 +1393,10 @@ def ingest_bvgxml(
     print(
         """
     The import is complete. You may still want to:
-    - Figure out what to do with  the Rotations starting or ending at an "Abstellfläche"
+    - Remove some rotations that are not relevant
+    - Merge the vehicle types into three major types
+    - Figure out what happens with the rotations at the very end of the schedule. There seem to be some borked
+      ones there.
     """
     )
 
