@@ -1031,6 +1031,11 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     for station in session.query(Station).filter(Station.scenario_id == scenario_id).all():
         if station.name_short is None:
             continue
+
+        # We do not merge the depot stations marked with "BF " (the space is important)
+        if station.name_short.startswith("BF "):
+            continue
+
         short_name = station.name_short
         if "_" in station.name_short:  # Special case for three-letter short names followed by an underscore
             short_name = station.name_short.split("_")[0]
