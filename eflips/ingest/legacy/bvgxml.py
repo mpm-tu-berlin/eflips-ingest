@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple, Union
 import eflips.model
 import fire  # type: ignore
 import psycopg2
-from eflips.model import ConsistencyWarning
+from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape
@@ -1014,47 +1014,59 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     :param session: An open database session
     :return: Nothing. The stations are updated in the database
     """
-    station_names = (
-        session.query(eflips.model.Station.name, func.count())
-        .filter(eflips.model.Station.scenario_id == scenario_id)
-        .group_by(eflips.model.Station.name)
-        .all()
-    )
-    for station_name, count in station_names:
-        if count == 1:
+    """
+    Merge all stations where the first four characters of the short name are the same.
+    Also has special handling for three-letter short names, where the first three characters are the same followed by
+    an underscore.
+
+    Also very special handling for Berlin Airport, where the short name is "BER1".
+
+    :param scenario:
+    :param session:
+    :return: Nothing. Databases are updated in place.
+    """
+    # Load all stations, grouped by the first four characters of the short name
+    # If the short name contains an unserscore, we take all the characters before the underscore
+    stations_by_short_name = {}
+    for station in session.query(Station).filter(Station.scenario_id == scenario_id).all():
+        if station.name_short is None:
             continue
-        all_stations_for_name = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.name == station_name)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .order_by(eflips.model.Station.id)
-            .all()
-        )
-        # Keep the ID of the first station
-        first_station_id = all_stations_for_name[0].id
-        # For the Other IDs, update all objects that reference them to reference the first station
-        for station in all_stations_for_name[1:]:
-            # Update the routes
-            session.query(eflips.model.Route).filter(eflips.model.Route.departure_station_id == station.id).update(
-                {"departure_station_id": first_station_id}
-            )
-            session.query(eflips.model.Route).filter(eflips.model.Route.arrival_station_id == station.id).update(
-                {"arrival_station_id": first_station_id}
-            )
+        short_name = station.name_short
+        if "_" in station.name_short:  # Special case for three-letter short names followed by an underscore
+            short_name = station.name_short.split("_")[0]
+        short_name = short_name[:4]
+        if short_name == "BER1":
+            short_name = "BER"  # Special case for Berlin Airport
+        if short_name not in stations_by_short_name:
+            stations_by_short_name[short_name] = []
+        stations_by_short_name[short_name].append(station)
 
-            # Update the AssocRouteStations
-            session.query(eflips.model.AssocRouteStation).filter(
-                eflips.model.AssocRouteStation.station_id == station.id
-            ).update({"station_id": first_station_id})
+    for short_name, stations in tqdm(stations_by_short_name.items()):
+        if len(stations) > 1:
+            # Merge the stations
+            # The main station will be the one with the shortest name
+            main_station = min(stations, key=lambda station: len(station.name))
+            for other_station in stations:
+                if other_station != main_station:
+                    other_station_geom = other_station.geom
+                    with session.no_autoflush:
+                        # Update all routes, trips, and stoptimes containing the next station to point to the first station instead
+                        session.query(Route).filter(Route.departure_station_id == other_station.id).update(
+                            {"departure_station_id": main_station.id}
+                        )
+                        session.query(Route).filter(Route.arrival_station_id == other_station.id).update(
+                            {"arrival_station_id": main_station.id}
+                        )
 
-            # Update the stop times
-            session.query(eflips.model.StopTime).filter(eflips.model.StopTime.station_id == station.id).update(
-                {"station_id": first_station_id}
-            )
+                        session.query(AssocRouteStation).filter(
+                            AssocRouteStation.station_id == other_station.id
+                        ).update({"station_id": main_station.id, "location": other_station_geom})
 
-            # Delete the station
-            session.refresh(station)  # Refresh the station object to get the updated routes
-            session.delete(station)
+                        session.query(StopTime).filter(StopTime.station_id == other_station.id).update(
+                            {"station_id": main_station.id}
+                        )
+                    session.flush()
+                    session.delete(other_station)
 
 
 def merge_identical_rotations(scenario_id: int, session: Session) -> None:
