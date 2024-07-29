@@ -1027,7 +1027,7 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     """
     # Load all stations, grouped by the first four characters of the short name
     # If the short name contains an unserscore, we take all the characters before the underscore
-    stations_by_short_name = {}
+    stations_by_short_name: Dict[str, List[Station]] = {}
     for station in session.query(Station).filter(Station.scenario_id == scenario_id).all():
         if station.name_short is None:
             continue
