@@ -287,6 +287,7 @@ class DummyIngester(AbstractIngester):
             depot=depot,
             area_type=AreaType.LINE,
             capacity=6,
+            row_count=1,
             vehicle_type=vehicle_type,
         )
         session.add(charging_area)
