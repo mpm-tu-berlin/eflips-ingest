@@ -99,7 +99,7 @@ def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, se
             name=name,
             name_short=name_short,
             is_electrified=False,
-            geom=from_shape(Point(0.0, 0.0)),  # Will be set later
+            geom=from_shape(Point(0.0, 0.0), srid=4326),  # Will be set later
         )
         session.add(station)
     return station
