@@ -19,7 +19,7 @@ from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, 
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
-from shapely import Point
+from shapely import Point  # type: ignore
 from lxml import etree
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session
