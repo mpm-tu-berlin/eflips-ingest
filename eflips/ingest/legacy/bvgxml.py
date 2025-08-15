@@ -18,7 +18,8 @@ import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
-from geoalchemy2.shape import to_shape
+from geoalchemy2.shape import to_shape, from_shape
+from shapely import Point
 from lxml import etree
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import Session
@@ -98,7 +99,7 @@ def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, se
             name=name,
             name_short=name_short,
             is_electrified=False,
-            geom="SRID=4326;POINTZ(0 0 0)",  # Will be set later
+            geom=from_shape(Point(0.0, 0.0)),  # Will be set later
         )
         session.add(station)
     return station
