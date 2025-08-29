@@ -5,7 +5,7 @@ from typing import List, Dict
 
 import eflips.model
 import pytest
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.legacy.bvgxml import (

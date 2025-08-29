@@ -16,12 +16,13 @@ import eflips.model
 import fire  # type: ignore
 import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
+from eflips.model import create_engine
+from sqlalchemy import func
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
-from shapely import Point  # type: ignore
 from lxml import etree
-from sqlalchemy import create_engine, func
+from shapely import Point  # type: ignore
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 from xsdata.formats.dataclass.parsers import XmlParser

@@ -9,7 +9,7 @@ from uuid import uuid4, UUID
 from zipfile import ZipFile
 
 from eflips.model import Station
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 
 import eflips
 from eflips.ingest.vdv import VdvIngester

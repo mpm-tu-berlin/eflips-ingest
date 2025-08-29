@@ -4,7 +4,7 @@ from multiprocessing import Pool
 from typing import Dict, Tuple, List
 
 from eflips.model import *
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 

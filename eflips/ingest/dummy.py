@@ -9,11 +9,11 @@ from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
 
 import sqlalchemy
+from eflips.model import create_engine
 from eflips.model.depot import Depot, AssocPlanProcess, Process, Area, Plan, AreaType
 from eflips.model.general import Scenario, VehicleType
 from eflips.model.network import Station, Line, Route, VoltageLevel, ChargeType
 from eflips.model.schedule import Trip, Rotation, TripType
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
