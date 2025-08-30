@@ -1077,6 +1077,25 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
             stations_by_short_name[short_name] = []
         stations_by_short_name[short_name].append(station)
 
+    # Also, manually add some known stations which should be merged
+    # BF L with BHLI
+    bh_i_station = session.query(Station).filter(Station.name_short == "BHLI").first()
+    bf_l_station = session.query(Station).filter(Station.name_short == "BF L").first()
+    if bh_i_station is not None and bf_l_station is not None:
+        stations_by_short_name["BF L"] = [bh_i_station, bf_l_station]
+
+    # BF B with BTRB
+    btr_b_station = session.query(Station).filter(Station.name_short == "BTRB").first()
+    bf_b_station = session.query(Station).filter(Station.name_short == "BF B").first()
+    if btr_b_station is not None and bf_b_station is not None:
+        stations_by_short_name["BF B"] = [btr_b_station, bf_b_station]
+
+    # BF I with BFI
+    bfi_station = session.query(Station).filter(Station.name_short == "BFI").first()
+    bf_i_station = session.query(Station).filter(Station.name_short == "BF I").first()
+    if bfi_station is not None and bf_i_station is not None:
+        stations_by_short_name["BF I"] = [bfi_station, bf_i_station]
+
     for short_name, stations in tqdm(stations_by_short_name.items()):
         if len(stations) > 1:
             # Merge the stations
