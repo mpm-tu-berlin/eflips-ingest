@@ -9,8 +9,6 @@ from typing import Tuple
 import requests
 from pyproj import Transformer
 
-import eflips.ingest
-
 """
 Some utility functions for the ingest module.
 """
@@ -99,16 +97,14 @@ def get_altitude(latlon: Tuple[float, float]) -> float:
         return get_altitude_google(latlon)
 
 
-def soldner_to_pointz(x: float, y: float) -> str:
+def soldner_to_point(x: float, y: float) -> str:
     """
-    Converts a Soldner coordinate to a PostGIS POINTZ string, also setting the altitude using API lookups
+    Converts a Soldner coordinate to a PostGIS POINT string, also setting the altitude using API lookups
 
     :param x: the x coordinate, in millimiters as per the BVG specification
     :param y: the y coordinate, in millimiters as per the BVG specification
-    :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
-             eflips.ingest.util module
+    :return: a PostGIS POINT string. The altitude is not calculated
     """
     lat, lon = transformer.transform(y / 1000, x / 1000)
-    z = eflips.ingest.util.get_altitude((lat, lon))
 
-    return f"SRID=4326;POINTZ({lon} {lat} {z})"
+    return f"SRID=4326;POINT({lon} {lat})"
