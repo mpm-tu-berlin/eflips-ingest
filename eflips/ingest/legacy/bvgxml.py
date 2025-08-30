@@ -974,45 +974,68 @@ def fix_max_sequence(database_url: str) -> None:
     :param database_url: The database URL to use
     :return: None
     """
-    SEQUENCES = [
-        "Scenario_id_seq",
-        "Plan_id_seq",
-        "Process_id_seq",
-        "BatteryType_id_seq",
-        "VehicleClass_id_seq",
-        "Line_id_seq",
-        "Station_id_seq",
-        "Depot_id_seq",
-        "AssocPlanProcess_id_seq",
-        "VehicleType_id_seq",
-        "Route_id_seq",
-        "Area_id_seq",
-        "Vehicle_id_seq",
-        "AssocVehicleTypeVehicleClass_id_seq",
-        "AssocRouteStation_id_seq",
-        "AssocAreaProcess_id_seq",
-        "Rotation_id_seq",
-        "Trip_id_seq",
-        "Event_id_seq",
-        "StopTime_id_seq",
+    TABLES = [
+        "Scenario",
+        "Plan",
+        "Process",
+        "BatteryType",
+        "VehicleClass",
+        "Line",
+        "Station",
+        "Depot",
+        "AssocPlanProcess",
+        "VehicleType",
+        "Route",
+        "Area",
+        "Vehicle",
+        "AssocVehicleTypeVehicleClass",
+        "AssocRouteStation",
+        "AssocAreaProcess",
+        "Rotation",
+        "Trip",
+        "Event",
+        "StopTime",
     ]
-    conn = psycopg2.connect(database_url)
-    conn.autocommit = True
-    for sequence in SEQUENCES:
-        table_name = sequence.split("_")[0]
-        key_name = sequence.split("_")[1]
-        with conn.cursor() as cur:
-            cur.execute(f'SELECT MAX("{key_name}") FROM "{table_name}"')
-            res = cur.fetchone()
+
+    if database_url.startswith("postgis") or database_url.startswith("postgres"):
+        KEY_NAME = "id"
+        conn = psycopg2.connect(database_url)
+        conn.autocommit = True
+        for table_name in TABLES:
+            sequence = f"{table_name}_id_seq"
+            with conn.cursor() as cur:
+                cur.execute(f'SELECT MAX("{KEY_NAME}") FROM "{table_name}"')
+                res = cur.fetchone()
+                max_id = res[0] if res is not None else None
+                if max_id is not None:
+                    cur.execute(f'ALTER SEQUENCE "{sequence}" RESTART WITH {max_id + 1}')
+                    cur.execute(f'SELECT NEXTVAL(\'"public"."{sequence}"\')')
+                    res = cur.fetchone()
+                    new_max_id = res[0] if res is not None else None
+                    if new_max_id <= max_id:
+                        raise ValueError(f"Sequence {sequence} did not restart properly. It is still at {new_max_id}")
+        conn.close()
+    elif database_url.startswith("sqlite") or database_url.startswith("spatialite"):
+        file_name = database_url.split("///")[-1]
+        if file_name == ":memory:":
+            raise ValueError("Cannot fix max sequence on in-memory SQLite database")
+        if not os.path.exists(file_name):
+            raise ValueError(f"Database file {file_name} does not exist")
+
+        conn = sqlite3.connect(file_name)
+        conn.isolation_level = None  # autocommit mode
+        cursor = conn.cursor()
+        for table_name in TABLES:
+            # Read the maximum id from the table
+            cursor.execute(f'SELECT MAX(id) FROM "{table_name}"')
+            res = cursor.fetchone()
             max_id = res[0] if res is not None else None
             if max_id is not None:
-                cur.execute(f'ALTER SEQUENCE "{sequence}" RESTART WITH {max_id + 1}')
-                cur.execute(f'SELECT NEXTVAL(\'"public"."{sequence}"\')')
-                res = cur.fetchone()
-                new_max_id = res[0] if res is not None else None
-                if new_max_id <= max_id:
-                    raise ValueError(f"Sequence {sequence} did not restart properly. It is still at {new_max_id}")
-    conn.close()
+                # Update the sqlite_sequence table
+                cursor.execute(f'UPDATE sqlite_sequence SET seq = {max_id+1} WHERE name = "{table_name}"')
+        conn.close()
+    else:
+        raise ValueError(f"Database type not supported: {database_url}")
 
 
 def merge_identical_stations(scenario_id: int, session: Session) -> None:
