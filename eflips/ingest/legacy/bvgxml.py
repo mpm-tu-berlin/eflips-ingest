@@ -615,9 +615,10 @@ def create_routes_and_time_profiles(
                         elif last_grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.APKT:
                             elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] += timedelta(seconds=duration)
                         else:
-                            raise ValueError(
+                            warnings.warn(
                                 f"Route {route.lfd_nr} of line {db_line.name} has a zero time at the end, but is neither an Einsetzfahrt nor an Aussetzfahrt"
-                            )
+                            )  # THis used to be an Exception, but it seems it works just fine.
+                            elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] += timedelta(seconds=duration)
 
             # We always add the first point
             if i == 0:
@@ -706,6 +707,12 @@ def create_routes_and_time_profiles(
                 db_routes_by_lfd_nr[route.lfd_nr] = None
                 continue
             elif [p.netzpunkt for p in route.punktfolge.punkt] == [102021010, 101021010, 101002083, 102002083]:
+                # This might be a turning-around at Osloer Straße. We don't need it
+                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
+                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
+                db_routes_by_lfd_nr[route.lfd_nr] = None
+                continue
+            elif [p.netzpunkt for p in route.punktfolge.punkt] == [102002050, 101021010, 101002083, 102002083]:
                 # This might be a turning-around at Osloer Straße. We don't need it
                 logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
                 # Write none to the dict of routes, to show we're aware of this route, but it's pointless
