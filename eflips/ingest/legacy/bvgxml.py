@@ -996,7 +996,7 @@ def fix_max_sequence(database_url: str) -> None:
         "Event",
         "StopTime",
     ]
-
+    conn: psycopg2.extensions.connection | sqlite3.Connection
     if database_url.startswith("postgis") or database_url.startswith("postgres"):
         KEY_NAME = "id"
         conn = psycopg2.connect(database_url)
