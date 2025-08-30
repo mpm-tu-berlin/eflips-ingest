@@ -8,7 +8,7 @@ from zipfile import ZipFile
 import eflips.model
 import pytest
 from eflips.model import Scenario, VehicleType
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.vdv import (

@@ -15,7 +15,7 @@ from zipfile import ZipFile
 
 import pytz
 from eflips.model import VehicleType, Scenario, Rotation, Station, Line, Route, Trip, TripType, StopTime
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 

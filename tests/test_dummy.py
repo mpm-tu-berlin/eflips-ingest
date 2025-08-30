@@ -3,7 +3,7 @@ from uuid import UUID
 
 import pytest
 from eflips.model import Scenario
-from sqlalchemy import create_engine
+from eflips.model import create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester

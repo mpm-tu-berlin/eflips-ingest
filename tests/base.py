@@ -5,8 +5,8 @@ from abc import ABC, abstractmethod
 from enum import Enum
 
 import pytest
+from eflips.model import create_engine
 from eflips.model import setup_database, Base
-from sqlalchemy import create_engine
 
 from eflips.ingest.base import AbstractIngester
 

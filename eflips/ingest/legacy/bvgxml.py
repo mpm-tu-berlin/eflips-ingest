@@ -3,6 +3,7 @@ import glob
 import logging
 import os
 import socket
+import sqlite3
 import statistics
 import warnings
 import zoneinfo
@@ -16,12 +17,13 @@ import eflips.model
 import fire  # type: ignore
 import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
+from eflips.model import create_engine
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
-from shapely import Point  # type: ignore
 from lxml import etree
-from sqlalchemy import create_engine, func
+from shapely import Point  # type: ignore
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from tqdm.auto import tqdm
 from xsdata.formats.dataclass.parsers import XmlParser
@@ -31,7 +33,7 @@ from eflips.ingest.legacy.xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
-from eflips.ingest.util import soldner_to_pointz
+from eflips.ingest.util import soldner_to_point
 
 
 def load_and_validate_xml(filename: Path) -> Linienfahrplan:
@@ -181,7 +183,7 @@ def add_or_ret_station_for_grid_point(
                 f"Station for grid point {gridpoint_id} not found, even though it is of type 'BPUNKT' and should have a station"
             )
             # Here, we can actually calculate the coordinates already
-            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
 
             station = eflips.model.Station(
                 scenario_id=scenario_id,
@@ -221,7 +223,7 @@ def add_or_ret_station_for_grid_point(
         )
         if station is None:
             # Here, we can actually calculate the coordinates already
-            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
 
             station = eflips.model.Station(
                 scenario_id=scenario_id,
@@ -557,7 +559,7 @@ def create_routes_and_time_profiles(
             # Load data to be used later
             station = add_or_ret_station_for_grid_point(scenario_id, point.netzpunkt, grid_points, session)
             grid_point = grid_points[point.netzpunkt]
-            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
 
             # Temporal: Update driving times
             driving_times: Dict[int, Tuple[timedelta, timedelta]] = {}  # Order: driving, waiting
@@ -613,9 +615,10 @@ def create_routes_and_time_profiles(
                         elif last_grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.APKT:
                             elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] += timedelta(seconds=duration)
                         else:
-                            raise ValueError(
+                            warnings.warn(
                                 f"Route {route.lfd_nr} of line {db_line.name} has a zero time at the end, but is neither an Einsetzfahrt nor an Aussetzfahrt"
-                            )
+                            )  # THis used to be an Exception, but it seems it works just fine.
+                            elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] += timedelta(seconds=duration)
 
             # We always add the first point
             if i == 0:
@@ -704,6 +707,12 @@ def create_routes_and_time_profiles(
                 db_routes_by_lfd_nr[route.lfd_nr] = None
                 continue
             elif [p.netzpunkt for p in route.punktfolge.punkt] == [102021010, 101021010, 101002083, 102002083]:
+                # This might be a turning-around at Osloer Straße. We don't need it
+                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
+                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
+                db_routes_by_lfd_nr[route.lfd_nr] = None
+                continue
+            elif [p.netzpunkt for p in route.punktfolge.punkt] == [102002050, 101021010, 101002083, 102002083]:
                 # This might be a turning-around at Osloer Straße. We don't need it
                 logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
                 # Write none to the dict of routes, to show we're aware of this route, but it's pointless
@@ -927,35 +936,33 @@ def create_trips_and_vehicle_schedules(
 
 def recenter_station(station: eflips.model.Station, session: Session) -> None:
     """
+
     Puts a station's location at the median of it's associations
     :param station:
     :param session:
     :return: Nothing. The station is updated in the database
     """
     # For each association, load the location and add it to a list
-    xs, ys, zs = [], [], []
+    xs, ys = [], []
     for assoc in station.assoc_route_stations:
         if isinstance(assoc.location, str):
-            loc_str = assoc.location.lstrip("SRID=4326;POINTZ(").rstrip(")")
-            x, y, z = loc_str.split(" ")
-            x_f, y_f, z_f = float(x), float(y), float(z)
+            loc_str = assoc.location.lstrip("SRID=4326;POINT(").rstrip(")")
+            x, y = loc_str.split(" ")
+            x_f, y_f = float(x), float(y)
             xs.append(x_f)
             ys.append(y_f)
-            zs.append(z_f)
         else:
             assert isinstance(assoc.location, WKBElement)
             shape = to_shape(assoc.location)  # typ
             xs.append(shape.x)
             ys.append(shape.y)
-            zs.append(shape.z)
 
     # Calculate the median of the list
     median_x = statistics.median(xs)
     median_y = statistics.median(ys)
-    median_z = statistics.median(zs)
 
     # Create a new location from the median
-    new_location = f"SRID=4326;POINTZ({median_x} {median_y} {median_z})"
+    new_location = f"SRID=4326;POINT({median_x} {median_y})"
 
     # Update the station
     station.geom = new_location  # type: ignore
@@ -967,45 +974,68 @@ def fix_max_sequence(database_url: str) -> None:
     :param database_url: The database URL to use
     :return: None
     """
-    SEQUENCES = [
-        "Scenario_id_seq",
-        "Plan_id_seq",
-        "Process_id_seq",
-        "BatteryType_id_seq",
-        "VehicleClass_id_seq",
-        "Line_id_seq",
-        "Station_id_seq",
-        "Depot_id_seq",
-        "AssocPlanProcess_id_seq",
-        "VehicleType_id_seq",
-        "Route_id_seq",
-        "Area_id_seq",
-        "Vehicle_id_seq",
-        "AssocVehicleTypeVehicleClass_id_seq",
-        "AssocRouteStation_id_seq",
-        "AssocAreaProcess_id_seq",
-        "Rotation_id_seq",
-        "Trip_id_seq",
-        "Event_id_seq",
-        "StopTime_id_seq",
+    TABLES = [
+        "Scenario",
+        "Plan",
+        "Process",
+        "BatteryType",
+        "VehicleClass",
+        "Line",
+        "Station",
+        "Depot",
+        "AssocPlanProcess",
+        "VehicleType",
+        "Route",
+        "Area",
+        "Vehicle",
+        "AssocVehicleTypeVehicleClass",
+        "AssocRouteStation",
+        "AssocAreaProcess",
+        "Rotation",
+        "Trip",
+        "Event",
+        "StopTime",
     ]
-    conn = psycopg2.connect(database_url)
-    conn.autocommit = True
-    for sequence in SEQUENCES:
-        table_name = sequence.split("_")[0]
-        key_name = sequence.split("_")[1]
-        with conn.cursor() as cur:
-            cur.execute(f'SELECT MAX("{key_name}") FROM "{table_name}"')
-            res = cur.fetchone()
+    conn: psycopg2.extensions.connection | sqlite3.Connection
+    if database_url.startswith("postgis") or database_url.startswith("postgres"):
+        KEY_NAME = "id"
+        conn = psycopg2.connect(database_url)
+        conn.autocommit = True
+        for table_name in TABLES:
+            sequence = f"{table_name}_id_seq"
+            with conn.cursor() as cur:
+                cur.execute(f'SELECT MAX("{KEY_NAME}") FROM "{table_name}"')
+                res = cur.fetchone()
+                max_id = res[0] if res is not None else None
+                if max_id is not None:
+                    cur.execute(f'ALTER SEQUENCE "{sequence}" RESTART WITH {max_id + 1}')
+                    cur.execute(f'SELECT NEXTVAL(\'"public"."{sequence}"\')')
+                    res = cur.fetchone()
+                    new_max_id = res[0] if res is not None else None
+                    if new_max_id <= max_id:
+                        raise ValueError(f"Sequence {sequence} did not restart properly. It is still at {new_max_id}")
+        conn.close()
+    elif database_url.startswith("sqlite") or database_url.startswith("spatialite"):
+        file_name = database_url.split("///")[-1]
+        if file_name == ":memory:":
+            raise ValueError("Cannot fix max sequence on in-memory SQLite database")
+        if not os.path.exists(file_name):
+            raise ValueError(f"Database file {file_name} does not exist")
+
+        conn = sqlite3.connect(file_name)
+        conn.isolation_level = None  # autocommit mode
+        cursor = conn.cursor()
+        for table_name in TABLES:
+            # Read the maximum id from the table
+            cursor.execute(f'SELECT MAX(id) FROM "{table_name}"')
+            res = cursor.fetchone()
             max_id = res[0] if res is not None else None
             if max_id is not None:
-                cur.execute(f'ALTER SEQUENCE "{sequence}" RESTART WITH {max_id + 1}')
-                cur.execute(f'SELECT NEXTVAL(\'"public"."{sequence}"\')')
-                res = cur.fetchone()
-                new_max_id = res[0] if res is not None else None
-                if new_max_id <= max_id:
-                    raise ValueError(f"Sequence {sequence} did not restart properly. It is still at {new_max_id}")
-    conn.close()
+                # Update the sqlite_sequence table
+                cursor.execute(f'UPDATE sqlite_sequence SET seq = {max_id+1} WHERE name = "{table_name}"')
+        conn.close()
+    else:
+        raise ValueError(f"Database type not supported: {database_url}")
 
 
 def merge_identical_stations(scenario_id: int, session: Session) -> None:

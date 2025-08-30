@@ -5,7 +5,7 @@ import pytest
 from eflips.ingest.util import (
     get_altitude_google,
     get_altitude_openelevation,
-    soldner_to_pointz,
+    soldner_to_point,
 )
 
 
@@ -46,5 +46,5 @@ class TestGeography:
         reason="OPENELEVATION_URL not set",
     )
     def test_soldner_to_pointz(self):
-        wkt_str = soldner_to_pointz(16522000, 29765400)
+        wkt_str = soldner_to_point(16522000, 29765400)
         assert wkt_str == "SRID=4326;POINTZ(13.278952671184285 52.59436500848307 34)"
