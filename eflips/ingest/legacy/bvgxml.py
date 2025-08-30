@@ -60,7 +60,7 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     xml_string = xml_string.replace("ns2:", "")
     xml_string = xml_string.replace(":ns2", "")
 
-    xsd_path = Path(__file__).parent.parent.parent.parent / "data" / "bvg_xml.xsd"
+    xsd_path = Path(__file__).parent.parent / "data" / "bvg_xml.xsd"
     xmlschema_doc = etree.parse(xsd_path)
     xmlschema = etree.XMLSchema(xmlschema_doc)
 
