@@ -4,20 +4,18 @@ import glob
 import logging
 import os
 import pickle
+import pytz
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta, datetime, time
+from eflips.model import VehicleType, Scenario, Rotation, Station, Line, Route, Trip, TripType, StopTime
+from eflips.model import create_engine
 from enum import Enum
 from pathlib import Path
+from sqlalchemy.orm import Session
 from typing import Dict, Callable, Tuple, Optional, List
 from uuid import UUID, uuid4
 from zipfile import ZipFile
-
-import pytz
-from eflips.model import VehicleType, Scenario, Rotation, Station, Line, Route, Trip, TripType, StopTime
-from eflips.model import create_engine
-from sqlalchemy.orm import Session
-from tqdm.auto import tqdm
 
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.vdv452data import (
@@ -443,7 +441,7 @@ class VdvIngester(AbstractIngester):
 
                 rotations_by_vdv_pk_and_date: Dict[Tuple[int, int, int, date], Rotation] = dict()
 
-                for rec_frt in tqdm(rec_frts):
+                for rec_frt in rec_frts:
                     # Load the dwell durations rec-frt-hzt that belong to this trip
                     this_trip_rec_frt_hzts = [x for x in rec_frt_hzts if x.frt_fid == rec_frt.frt_fid]
 

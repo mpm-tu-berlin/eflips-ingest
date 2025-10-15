@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import eflips.model
+import fire  # type: ignore
 import glob
 import logging
 import os
+import psycopg2
 import socket
 import sqlite3
 import statistics
@@ -9,23 +12,18 @@ import warnings
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from multiprocessing import Pool
-from pathlib import Path
-from typing import Dict, List, Tuple, Union
-
-import eflips.model
-import fire  # type: ignore
-import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from eflips.model import create_engine
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
 from lxml import etree
+from multiprocessing import Pool
+from pathlib import Path
 from shapely import Point  # type: ignore
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from tqdm.auto import tqdm
+from typing import Dict, List, Tuple, Union
 from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.ingest.util
@@ -1096,7 +1094,7 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     if bfi_station is not None and bf_i_station is not None:
         stations_by_short_name["BF I"] = [bfi_station, bf_i_station]
 
-    for short_name, stations in tqdm(stations_by_short_name.items()):
+    for short_name, stations in stations_by_short_name.items():
         if len(stations) > 1:
             # Merge the stations
             # The main station will be the one with the shortest name
@@ -1306,18 +1304,12 @@ def ingest_bvgxml(
 
     ### STEP 1: Load the XML files into memory
     # First, we go through all the files and load them into memory
-    schedules = []
     if multithreading:
         with Pool() as pool:
-            for schedule in tqdm(
-                pool.imap_unordered(load_and_validate_xml, paths_pathlike),
-                total=len(paths_pathlike),
-                desc=f"(1/{TOTAL_STEPS}) Loading XML files",
-            ):
-                schedules.append(schedule)
+            schedules = pool.map(load_and_validate_xml, paths_pathlike)
     else:
         schedules = []
-        for path in tqdm(paths_pathlike, desc=f"(1/{TOTAL_STEPS}) Loading XML files"):
+        for path in paths_pathlike:
             schedules.append(load_and_validate_xml(path))
 
     ### STEP 1.5: Create the database session and scenario
@@ -1336,7 +1328,7 @@ def ingest_bvgxml(
     ### STEP 2: Create the stations
     # Now, we go through the schedules and create the stations
     # No multithreading, because that would just create duplicate stations
-    for schedule in tqdm(schedules, desc=f"(2/{TOTAL_STEPS}) Creating stations"):
+    for schedule in schedules:
         create_stations(schedule, scenario_id, session)
 
     ### STEP 3: Create the routes and save some data for later
@@ -1348,14 +1340,14 @@ def ingest_bvgxml(
             Dict[int, None | eflips.model.Route],
         ]
     ] = []
-    for schedule in tqdm(schedules, desc=f"(3/{TOTAL_STEPS}) Creating routes"):
+    for schedule in schedules:
         trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(schedule, scenario_id, session)
         create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
 
     ### STEP 4: Create the trip prototypes
     # This can be done in parallel, but we don't need to do it, it's fast enough
     all_trip_protoypes: List[Dict[int, None | TimeProfile]] = []
-    for create_route_result in tqdm(create_route_results, desc=f"(4/{TOTAL_STEPS}) Creating trip prototypes"):
+    for create_route_result in create_route_results:
         trip_prototypes = create_trip_prototypes(create_route_result[0], create_route_result[1], create_route_result[2])
         all_trip_protoypes.append(trip_prototypes)
 
@@ -1370,7 +1362,7 @@ def ingest_bvgxml(
                 trip_prototypes[fahrt_id] = time_profile
 
     ### STEP 5: Create the trips and vehicle schedules
-    for schedule in tqdm(schedules, desc=f"(5/{TOTAL_STEPS}) Creating trips and vehicle schedules"):
+    for schedule in schedules:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=ConsistencyWarning)
             create_trips_and_vehicle_schedules(schedule, trip_prototypes, scenario_id, session)
@@ -1383,11 +1375,7 @@ def ingest_bvgxml(
         .filter(eflips.model.Station.scenario_id == scenario_id)
         .distinct(eflips.model.Station.id)
     )
-    for station in tqdm(
-        stations_without_geom_q,
-        desc=f"(6/{TOTAL_STEPS}) Setting station geom",
-        total=stations_without_geom_q.count(),
-    ):
+    for station in stations_without_geom_q:
         # Get the median of the assoc_route_stations
         recenter_station(station, session)
 
@@ -1404,7 +1392,7 @@ def ingest_bvgxml(
         .filter(eflips.model.Route.scenario_id == scenario_id)
         .filter(eflips.model.Route.distance >= 1e6 * 1000)
     )
-    for route in tqdm(long_route_q, desc=f"(7/{TOTAL_STEPS}) Fixing long routes", total=long_route_q.count()):
+    for route in long_route_q:
         first_point = route.departure_station.geom
         last_point = route.arrival_station.geom
 
