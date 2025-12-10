@@ -33,7 +33,7 @@ from geoalchemy2.shape import from_shape
 from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
 
-import gtfs_kit as gk
+import gtfs_kit as gk  # type: ignore [import-untyped]
 from eflips.ingest.base import AbstractIngester
 from gtfs_kit import Feed
 
@@ -60,20 +60,20 @@ class GtfsIngester(AbstractIngester):
         dates: List[Any] = []
 
         # Case 1: Check calendar.txt for regular schedules
-        if feed.calendar is not None and not feed.calendar.empty:  # type: ignore[attr-defined]
-            if "start_date" in feed.calendar.columns and "end_date" in feed.calendar.columns:  # type: ignore[attr-defined]
-                calendar_start = feed.calendar["start_date"].min()  # type: ignore[attr-defined]
-                calendar_end = feed.calendar["end_date"].max()  # type: ignore[attr-defined]
+        if feed.calendar is not None and not feed.calendar.empty:
+            if "start_date" in feed.calendar.columns and "end_date" in feed.calendar.columns:
+                calendar_start = feed.calendar["start_date"].min()
+                calendar_end = feed.calendar["end_date"].max()
                 if pd.notna(calendar_start):
                     dates.append(calendar_start)
                 if pd.notna(calendar_end):
                     dates.append(calendar_end)
 
         # Case 2: Check calendar_dates.txt for explicit dates
-        if feed.calendar_dates is not None and not feed.calendar_dates.empty:  # type: ignore[attr-defined]
-            if "date" in feed.calendar_dates.columns:  # type: ignore[attr-defined]
-                cal_dates_start = feed.calendar_dates["date"].min()  # type: ignore[attr-defined]
-                cal_dates_end = feed.calendar_dates["date"].max()  # type: ignore[attr-defined]
+        if feed.calendar_dates is not None and not feed.calendar_dates.empty:
+            if "date" in feed.calendar_dates.columns:
+                cal_dates_start = feed.calendar_dates["date"].min()
+                cal_dates_end = feed.calendar_dates["date"].max()
                 if pd.notna(cal_dates_start):
                     dates.append(cal_dates_start)
                 if pd.notna(cal_dates_end):
@@ -229,11 +229,11 @@ class GtfsIngester(AbstractIngester):
             )
 
         # Get timezone from agency.txt
-        if feed.agency is None or len(feed.agency) == 0:  # type: ignore[attr-defined]
+        if feed.agency is None or len(feed.agency) == 0:
             return (False, {"agency": "No agency information found in GTFS feed"})
 
         # Check if all agencies have the same timezone
-        timezones = feed.agency["agency_timezone"].unique()  # type: ignore[attr-defined]
+        timezones = feed.agency["agency_timezone"].unique()
         if len(timezones) == 0:
             return (False, {"timezone": "No agency_timezone found in GTFS feed"})
         if len(timezones) > 1:
@@ -1065,10 +1065,10 @@ class GtfsIngester(AbstractIngester):
         :param agency_name: Name of the agency to filter by (optional if single-agency feed)
         :return: Filtered Feed object, or error tuple (False, error_dict)
         """
-        if feed.agency is None or len(feed.agency) == 0:  # type: ignore[attr-defined]
+        if feed.agency is None or len(feed.agency) == 0:
             return (False, {"agency": "No agency information found in GTFS feed"})
 
-        num_agencies = len(feed.agency)  # type: ignore[attr-defined]
+        num_agencies = len(feed.agency)
 
         # Single agency - no filtering needed
         if num_agencies == 1:
@@ -1079,7 +1079,7 @@ class GtfsIngester(AbstractIngester):
         # Multiple agencies - agency_name is required
         if not agency_name or agency_name == "":
             # Build helpful error message with list of available agencies
-            agency_names = feed.agency["agency_name"].tolist()  # type: ignore[attr-defined]
+            agency_names = feed.agency["agency_name"].tolist()
             agency_list = "\n".join(f"  - {name}" for name in agency_names)
             error_msg = (
                 f"The GTFS feed contains {num_agencies} agencies. "
@@ -1089,11 +1089,11 @@ class GtfsIngester(AbstractIngester):
             return (False, {"agency_name": error_msg})
 
         # Find the agency by name
-        matching_agencies = feed.agency[feed.agency["agency_name"] == agency_name]  # type: ignore[attr-defined]
+        matching_agencies = feed.agency[feed.agency["agency_name"] == agency_name]
 
         if len(matching_agencies) == 0:
             # Agency name not found
-            agency_names = feed.agency["agency_name"].tolist()  # type: ignore[attr-defined]
+            agency_names = feed.agency["agency_name"].tolist()
             agency_list = "\n".join(f"  - {name}" for name in agency_names)
             error_msg = f"Agency '{agency_name}' not found in GTFS feed.\n\n" f"Available agencies:\n{agency_list}"
             return (False, {"agency_name": error_msg})
@@ -1106,7 +1106,7 @@ class GtfsIngester(AbstractIngester):
         try:
             filtered_feed = feed.restrict_to_agencies([agency_id])
             assert isinstance(filtered_feed, Feed)
-            self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")  # type: ignore[attr-defined]
+            self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")
             return filtered_feed
         except Exception as e:
             return (False, {"agency_filter": f"Failed to filter feed by agency: {str(e)}"})
@@ -1128,14 +1128,14 @@ class GtfsIngester(AbstractIngester):
             return feed
 
         # Check if routes exist
-        if feed.routes is None or len(feed.routes) == 0:  # type: ignore[attr-defined]
+        if feed.routes is None or len(feed.routes) == 0:
             return (False, {"routes": "No routes found in GTFS feed"})
 
         # Filter for bus routes (route_type 3 or 700-799)
         # route_type 3 = Bus (standard GTFS)
         # route_type 700-799 = Bus service (extended GTFS)
-        bus_routes = feed.routes[  # type: ignore[attr-defined]
-            (feed.routes["route_type"] == 3) | ((feed.routes["route_type"] >= 700) & (feed.routes["route_type"] <= 799))  # type: ignore[attr-defined]
+        bus_routes = feed.routes[
+            (feed.routes["route_type"] == 3) | ((feed.routes["route_type"] >= 700) & (feed.routes["route_type"] <= 799))
         ]
 
         if len(bus_routes) == 0:
@@ -1152,7 +1152,7 @@ class GtfsIngester(AbstractIngester):
         try:
             filtered_feed = feed.restrict_to_routes(bus_route_ids)
             assert isinstance(filtered_feed, Feed)
-            self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")  # type: ignore[attr-defined]
+            self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")
             return filtered_feed
         except Exception as e:
             return (False, {"route_type_filter": f"Failed to filter feed by route type: {str(e)}"})
@@ -1168,11 +1168,11 @@ class GtfsIngester(AbstractIngester):
         :param feed: A gtfs_kit Feed object
         :return: Dictionary of shape_id -> LineString, or None if no shapes available
         """
-        if feed.shapes is None:  # type: ignore[attr-defined]
+        if feed.shapes is None:
             self.logger.info("Feed has no shapes.txt file, skipping route geometry creation")
             return None
 
-        self.logger.info(f"Building route geometries from {len(feed.shapes['shape_id'].unique())} GTFS shapes")  # type: ignore[attr-defined]
+        self.logger.info(f"Building route geometries from {len(feed.shapes['shape_id'].unique())} GTFS shapes")
 
         try:
             # Use gtfs_kit to build geometries in WGS84 coordinates
