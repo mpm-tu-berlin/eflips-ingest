@@ -1,5 +1,7 @@
+import gtfs_kit as gk  # type: ignore [import-untyped]
 import logging
 import os
+import pandas as pd
 import pathlib as pl
 import pickle
 import sys
@@ -8,13 +10,6 @@ import uuid
 import warnings
 from datetime import date as date_type
 from datetime import datetime, timedelta
-from enum import Enum
-from pathlib import Path
-from typing import Dict, Callable, Tuple, List, Any
-from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
-
-import pandas as pd
 from eflips.model import (
     Station,
     Line,
@@ -29,13 +24,17 @@ from eflips.model import (
     Base,
 )
 from eflips.model import create_engine
+from enum import Enum
 from geoalchemy2.shape import from_shape
+from gtfs_kit import Feed
+from pathlib import Path
 from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
+from typing import Dict, Callable, Tuple, List, Any
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
-import gtfs_kit as gk  # type: ignore [import-untyped]
 from eflips.ingest.base import AbstractIngester
-from gtfs_kit import Feed
 
 
 class GtfsIngester(AbstractIngester):
@@ -599,6 +598,7 @@ class GtfsIngester(AbstractIngester):
             self.logger.info("Creating default VehicleType")
             default_vehicle_type = VehicleType(
                 name="Default Bus",
+                name_short="default_bus",
                 battery_capacity=350.0,  # kWh
                 charging_curve=[[0, 150], [1, 150]],  # Simple charging curve
                 opportunity_charging_capable=False,
