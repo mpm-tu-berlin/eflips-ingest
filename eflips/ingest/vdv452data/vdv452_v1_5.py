@@ -14,7 +14,7 @@ from typing import Optional, Dict, Tuple, List
 
 from eflips.model import VehicleType, Scenario, Rotation, Line, Route, AssocRouteStation, Station
 
-from eflips.ingest.util import get_altitude
+from eflips.ingest.util import get_altitude, geometry_has_z
 
 
 class OnrTyp(Enum):
@@ -824,12 +824,16 @@ class RecOrt(VdvBaseObjectWithONR):
                 longitude = sum([rec_ort.longitude for rec_ort in rec_orts if rec_ort.longitude is not None]) / len(
                     rec_orts
                 )
-                # The altitude is the average of the altitudes
-                altitude = sum([rec_ort.altitude for rec_ort in rec_orts if rec_ort.altitude is not None]) / len(
-                    rec_orts
-                )
+                if geometry_has_z():
+                    # The altitude is the average of the altitudes
+                    altitude = sum([rec_ort.altitude for rec_ort in rec_orts if rec_ort.altitude is not None]) / len(
+                        rec_orts
+                    )
 
-                geom = f"POINT({longitude} {latitude} {altitude})"
+                if geometry_has_z():
+                    geom = f"POINTZ({longitude} {latitude} {altitude})"
+                else:
+                    geom = f"POINT({longitude} {latitude})"
             else:
                 geom = None
 
@@ -1154,7 +1158,10 @@ class RecLid(VdvBaseObject):
                 logger.debug(f"Encountered a station without coordinates: {this_rec_ort}")
                 location = None
             else:
-                location = f"POINT({this_rec_ort.longitude} {this_rec_ort.latitude} {this_rec_ort.altitude})"
+                if geometry_has_z() and this_rec_ort.altitude is not None:
+                    location = f"POINTZ({this_rec_ort.longitude} {this_rec_ort.latitude} {this_rec_ort.altitude})"
+                else:
+                    location = f"POINT({this_rec_ort.longitude} {this_rec_ort.latitude})"
 
             this_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
 

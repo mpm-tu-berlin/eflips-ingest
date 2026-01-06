@@ -19,9 +19,26 @@ from eflips.ingest.legacy.bvgxml import (
     recenter_station,
 )
 from eflips.ingest.legacy.xmldata import Linienfahrplan
+from tests.conftest import mock_get_altitude
 
 
 class TestBVGXML:
+    @pytest.fixture(autouse=True)
+    def setup_altitude_mock(self, monkeypatch) -> None:
+        """Automatically mock altitude lookups for all tests in this class."""
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude",
+            mock_get_altitude,
+        )
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude_google",
+            mock_get_altitude,
+        )
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude_openelevation",
+            mock_get_altitude,
+        )
+
     @pytest.fixture
     def xml_path(self) -> Path:
         """
@@ -82,10 +99,6 @@ class TestBVGXML:
                 assert station.name_short is not None
                 assert station.name_short != ""
 
-    @pytest.mark.skipif(
-        not os.getenv("OPENELEVATION_URL"),
-        reason="OPENELEVATION_URL not set",
-    )
     def test_create_routes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -114,10 +127,6 @@ class TestBVGXML:
                     assert assoc.station is not None
                     assert assoc.location is not None
 
-    @pytest.mark.skipif(
-        not os.getenv("OPENELEVATION_URL"),
-        reason="OPENELEVATION_URL not set",
-    )
     def test_create_trip_prototypes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -144,10 +153,6 @@ class TestBVGXML:
                 assert len(trip.time_profile_points) > 0
                 assert len(trip.time_profile_points) == len(trip.route.assoc_route_stations)
 
-    @pytest.mark.skipif(
-        not os.getenv("OPENELEVATION_URL"),
-        reason="OPENELEVATION_URL not set",
-    )
     def test_create_trips_and_vehicle_schedules(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
@@ -200,10 +205,6 @@ class TestBVGXML:
                 Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
             )
 
-    @pytest.mark.skipif(
-        not os.getenv("OPENELEVATION_URL"),
-        reason="OPENELEVATION_URL not set",
-    )
     def test_recenter_stations(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
         eflips.model.Base.metadata.drop_all(engine)
