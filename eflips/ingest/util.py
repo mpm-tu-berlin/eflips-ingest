@@ -112,15 +112,12 @@ def soldner_to_pointz(x: float, y: float) -> str:
     lat, lon = transformer.transform(y / 1000, x / 1000)
 
     # Check the type of eflips.model.Station.geom
-    assert isinstance(eflips.model.Station.geom.type, geoalchemy2.types.Geometry)
-    if eflips.model.Station.geom.type.geometry_type == "POINTZ":
+    if geometry_has_z():
         z = eflips.ingest.util.get_altitude((lat, lon))
 
         return f"SRID=4326;POINTZ({lon} {lat} {z})"
-    elif eflips.model.Station.geom.type.geometry_type == "POINT":
-        return f"SRID=4326;POINT({lon} {lat})"
     else:
-        raise ValueError("eflips.model.Station.geom has unsupported geometry type")
+        return f"SRID=4326;POINT({lon} {lat})"
 
 
 def geometry_has_z() -> bool:
@@ -135,18 +132,18 @@ def geometry_has_z() -> bool:
     if Station.geom.type.geometry_type == "POINTZ":
         assert (
             AssocRouteStation.location.type.geometry_type == "POINTZ"
-        ), f"Inconsistent geometry types: {Station.location.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
         assert (
             Route.geom.type.geometry_type == "LINESTRINGZ"
-        ), f"Inconsistent geometry types: {Station.location.type.geometry_type } vs {Route.geom.type.geometry_type }"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {Route.geom.type.geometry_type }"
         has_z = True
     elif Station.geom.type.geometry_type == "POINT":
         assert (
             AssocRouteStation.location.type.geometry_type == "POINT"
-        ), f"Inconsistent geometry types: {Station.location.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
         assert (
             Route.geom.type.geometry_type == "LINESTRING"
-        ), f"Inconsistent geometry types: {Station.location.type.geometry_type } vs {Route.geom.type.geometry_type }"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {Route.geom.type.geometry_type }"
         has_z = False
     else:
         raise ValueError("eflips.model.Station.geom has unsupported geometry type")

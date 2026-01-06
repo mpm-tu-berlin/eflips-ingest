@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
-import fire  # type: ignore
 import glob
 import logging
 import os
-
-import psycopg2
 import socket
+import sqlite3
 import statistics
 import warnings
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from multiprocessing import Pool
+from pathlib import Path
+from typing import Dict, List, Tuple, Union
+
+import fire  # type: ignore
+import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from eflips.model import create_engine
-from sqlalchemy import func
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
 from lxml import etree
-from multiprocessing import Pool
-from pathlib import Path
 from shapely import Point  # type: ignore
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import Dict, List, Tuple, Union
 from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.ingest.util

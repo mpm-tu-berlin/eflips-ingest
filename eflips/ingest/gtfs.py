@@ -7,7 +7,7 @@ import pickle
 import sys
 import time
 
-from shapely import LineString
+from shapely import LineString  # type: ignore [import-untyped]
 
 from eflips.ingest.util import get_altitude, geometry_has_z
 import uuid

@@ -1,4 +1,4 @@
-name: Unit Tests
+name: Unit Tests (eflips-model v9.1.0)
 on: pull_request
 
 env:
@@ -11,7 +11,6 @@ jobs:
     strategy:
       matrix:
         PYTHON_VERSION: [ "3.10", "3.11", "3.12", "3.13" ]
-        DATABASE: [ "postgres", "sqlite" ]
     services:
       postgres:
         image: postgis/postgis
@@ -34,7 +33,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
       - name: Enable btree_gist postgre extension
-        if: matrix.DATABASE == 'postgres'
         run: |
           psql postgres://user:password@localhost/database -c "CREATE EXTENSION btree_gist;"
       - name: Set up Python ${{ matrix.PYTHON_VERSION }}
@@ -49,11 +47,12 @@ jobs:
       - name: Install Dependencies
         run: |
           poetry install --no-root
+          pip install --force-reinstall eflips-model==9.1.0
       - name: Run Tests
         run:
           poetry run pytest
         env:
-          DATABASE_URL: ${{ matrix.DATABASE == 'postgres' && 'postgresql://user:password@localhost/database' || 'sqlite:///./test_database.db' }}
+          DATABASE_URL: postgresql://user:password@localhost/database
           ELEVATION_DUMMY_MODE: "True"
           PYTHONPATH: ${{ github.workspace }}
 
