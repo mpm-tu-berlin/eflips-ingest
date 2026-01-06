@@ -187,7 +187,11 @@ def add_or_ret_station_for_grid_point(
             # Here, we can actually calculate the coordinates already
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
+            # The ID we need to give it must not collide with the IDs of the other stations
+            # So we give it 1 billion plus the gridpoint ID
+
             station = eflips.model.Station(
+                id=1_000_000_000 + gridpoint_id,
                 scenario_id=scenario_id,
                 name=f"BPUNKT {grid_point.langname}",
                 name_short=short_name,
