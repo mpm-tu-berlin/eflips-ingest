@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Tuple, Callable
 from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
 
 import sqlalchemy
 from eflips.model import create_engine
@@ -394,7 +395,8 @@ class DummyIngester(AbstractIngester):
         vehicle_type = session.query(VehicleType).filter(VehicleType.scenario_id == scenario.id).one()
 
         # Create 10 inbound and outbound trips with 20 minutes between them offset by k*10 minutes
-        first_departure = datetime(2024, 1, 1, 6, 0) + timedelta(minutes=k * 10)
+        tz = ZoneInfo("UTC")
+        first_departure = datetime(2024, 1, 1, 6, 0, tzinfo=tz) + timedelta(minutes=k * 10)
         trip_duration = timedelta(minutes=30)
         break_duration = timedelta(minutes=10)
 

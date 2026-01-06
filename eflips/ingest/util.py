@@ -6,8 +6,11 @@ from numbers import Number
 from tempfile import gettempdir
 from typing import Tuple
 
+import geoalchemy2
 import requests
 from pyproj import Transformer
+from eflips.model import AssocRouteStation, Route, Station
+import eflips.ingest
 
 """
 Some utility functions for the ingest module.
@@ -97,14 +100,51 @@ def get_altitude(latlon: Tuple[float, float]) -> float:
         return get_altitude_google(latlon)
 
 
-def soldner_to_point(x: float, y: float) -> str:
+def soldner_to_pointz(x: float, y: float) -> str:
     """
-    Converts a Soldner coordinate to a PostGIS POINT string, also setting the altitude using API lookups
+    Converts a Soldner coordinate to a PostGIS POINTZ string, also setting the altitude using API lookups
 
     :param x: the x coordinate, in millimiters as per the BVG specification
     :param y: the y coordinate, in millimiters as per the BVG specification
-    :return: a PostGIS POINT string. The altitude is not calculated
+    :return: a PostGIS POINTZ string. The altitude is calculated using the lookup methods from the
+             eflips.ingest.util module
     """
     lat, lon = transformer.transform(y / 1000, x / 1000)
 
-    return f"SRID=4326;POINT({lon} {lat})"
+    # Check the type of eflips.model.Station.geom
+    if geometry_has_z():
+        z = eflips.ingest.util.get_altitude((lat, lon))
+
+        return f"SRID=4326;POINTZ({lon} {lat} {z})"
+    else:
+        return f"SRID=4326;POINT({lon} {lat})"
+
+
+def geometry_has_z() -> bool:
+    """
+    Check whether the geometry types of Station, Route and AssocRouteStation have Z coordinates.
+    :return: True if they have Z coordinates, False otherwise
+    """
+
+    assert isinstance(AssocRouteStation.location.type, geoalchemy2.types.Geometry)
+    assert isinstance(Station.geom.type, geoalchemy2.types.Geometry)
+    assert isinstance(Route.geom.type, geoalchemy2.types.Geometry)
+    if Station.geom.type.geometry_type == "POINTZ":
+        assert (
+            AssocRouteStation.location.type.geometry_type == "POINTZ"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
+        assert (
+            Route.geom.type.geometry_type == "LINESTRINGZ"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {Route.geom.type.geometry_type }"
+        has_z = True
+    elif Station.geom.type.geometry_type == "POINT":
+        assert (
+            AssocRouteStation.location.type.geometry_type == "POINT"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {AssocRouteStation.location.type.geometry_type }"
+        assert (
+            Route.geom.type.geometry_type == "LINESTRING"
+        ), f"Inconsistent geometry types: {Station.geom.type.geometry_type } vs {Route.geom.type.geometry_type }"
+        has_z = False
+    else:
+        raise ValueError("eflips.model.Station.geom has unsupported geometry type")
+    return has_z

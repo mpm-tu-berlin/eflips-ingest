@@ -3,14 +3,13 @@ import os.path
 from pathlib import Path
 from uuid import UUID
 
-import eflips.model
 import pytest
-from eflips.model import create_engine
-from sqlalchemy.orm import Session
 
 from eflips.ingest.gtfs import GtfsIngester
 from tests.base import BaseIngester
 import gtfs_kit as gk
+
+from tests.conftest import mock_get_altitude
 
 
 class TestGtfsIngester(BaseIngester):
@@ -21,6 +20,22 @@ class TestGtfsIngester(BaseIngester):
     - sample-feed-1.zip: Minimal GTFS feed for basic functionality
     - VBB.zip: Multi-agency feed used ONLY for agency filtering tests (DAY mode only)
     """
+
+    @pytest.fixture(autouse=True)
+    def setup_altitude_mock(self, monkeypatch) -> None:
+        """Automatically mock altitude lookups for all tests in this class."""
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude",
+            mock_get_altitude,
+        )
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude_google",
+            mock_get_altitude,
+        )
+        monkeypatch.setattr(
+            "eflips.ingest.util.get_altitude_openelevation",
+            mock_get_altitude,
+        )
 
     @pytest.fixture()
     def ingester(self) -> GtfsIngester:

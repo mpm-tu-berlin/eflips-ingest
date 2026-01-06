@@ -1,4 +1,4 @@
-name: Unit Tests
+name: Unit Tests (eflips-model v9.1.0)
 on: pull_request
 
 env:
@@ -11,7 +11,6 @@ jobs:
     strategy:
       matrix:
         PYTHON_VERSION: [ "3.10", "3.11", "3.12", "3.13" ]
-        DATABASE: [ "postgres", "sqlite" ]
     services:
       postgres:
         image: postgis/postgis
@@ -36,15 +35,8 @@ jobs:
         with:
           lfs: true
       - name: Enable btree_gist postgre extension
-        if: matrix.DATABASE == 'postgres'
         run: |
           psql postgres://user:password@localhost/database -c "CREATE EXTENSION btree_gist;"
-      # SQLite/SpatiaLite specific setup
-      - name: Install SpatiaLite
-        if: matrix.DATABASE == 'sqlite'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsqlite3-mod-spatialite
       - name: Set up Python ${{ matrix.PYTHON_VERSION }}
         uses: actions/setup-python@v6
         with:
@@ -57,12 +49,12 @@ jobs:
       - name: Install Dependencies
         run: |
           poetry install --no-root
+          pip install --force-reinstall eflips-model==9.1.0
       - name: Run Tests
         run:
           poetry run pytest
         env:
-          DATABASE_URL: ${{ matrix.DATABASE == 'postgres' && 'postgresql://user:password@localhost/database' || 'sqlite:///./test_database.db' }}
-          SPATIALITE_LIBRARY_PATH: "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
+          DATABASE_URL: postgresql://user:password@localhost/database
           ELEVATION_DUMMY_MODE: "True"
           PYTHONPATH: ${{ github.workspace }}
 

@@ -6,6 +6,10 @@ import pathlib as pl
 import pickle
 import sys
 import time
+
+from shapely import LineString  # type: ignore [import-untyped]
+
+from eflips.ingest.util import get_altitude, geometry_has_z
 import uuid
 import warnings
 from datetime import date as date_type
@@ -346,7 +350,6 @@ class GtfsIngester(AbstractIngester):
             # Create scenario and add to database
             scenario = Scenario(
                 name=f"GTFS Import from {str(gtfs_zip_file)} @ {datetime.now().isoformat()}",
-                description="Imported from GTFS feed",
             )
             session.add(scenario)
             if always_flush:
@@ -407,6 +410,12 @@ class GtfsIngester(AbstractIngester):
                 geom = None
                 if pd.notna(stop_lat) and pd.notna(stop_lon):
                     point = Point(stop_lon, stop_lat)  # Note: lon, lat order for Point
+
+                    # If geometry type has Z, we need to get altitude
+                    if geometry_has_z():
+                        z = get_altitude((stop_lat, stop_lon))
+                        point = Point(stop_lon, stop_lat, z)
+
                     geom = from_shape(point, srid=4326)
 
                 station_from_gtfs = Station(
@@ -549,11 +558,8 @@ class GtfsIngester(AbstractIngester):
                 # If we have geometry, calculate distance from it
                 # The Route model requires that geom length equals distance field (geodetic meters)
                 if route_geom is not None and shapely_geom is not None:
-                    # Calculate geodetic length directly using pyproj (more performant than GeoDataFrame conversion)
-                    from pyproj import Geod
-
-                    geod = Geod(ellps="WGS84")
-                    distance = abs(geod.geometry_length(shapely_geom))
+                    # Calculate geodetic length directly using Route.calculate_length
+                    distance = Route.calculate_length(session, shapely_geom.wkt)
                 else:
                     # No geometry available, try to get distance from shape_dist_traveled
                     route_trips = trip_endpoints_df[
@@ -1179,10 +1185,24 @@ class GtfsIngester(AbstractIngester):
             geometry_by_shape = feed.build_geometry_by_shape(use_utm=False)
             assert isinstance(geometry_by_shape, dict)
             self.logger.info(f"Successfully built {len(geometry_by_shape)} route geometries")
-            return geometry_by_shape
+            if geometry_has_z():
+                # We will need to turn each LINTESTRING into a LINESTRING Z by looking up the Z values for all points
+                self.logger.info("Converting route geometries to LINESTRING Z format")
+                geometry_by_shape_z: Dict[str, LineString] = {}
+                for shape_id, geom in geometry_by_shape.items():
+                    assert isinstance(geom, LineString)
+                    coords_with_z = []
+                    for lon, lat in geom.coords:
+                        z = get_altitude((lat, lon))
+                        coords_with_z.append((lon, lat, z))
+                    geom_z = LineString(coords_with_z)
+                    geometry_by_shape_z[shape_id] = geom_z
+                return geometry_by_shape_z
+            else:
+                return geometry_by_shape
         except Exception as e:
-            self.logger.warning(f"Failed to build route geometries: {e}")
-            return None
+            self.logger.error(f"Failed to build route geometries: {e}")
+            raise e  # Potentially, there are some special types of exceptions we may want to swallow
 
     def _preprocess_stop_times_by_trip(self, stop_times_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """

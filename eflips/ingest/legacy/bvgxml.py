@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-import eflips.model
-import fire  # type: ignore
 import glob
 import logging
 import os
-import psycopg2
 import socket
 import sqlite3
 import statistics
@@ -12,18 +9,21 @@ import warnings
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from multiprocessing import Pool
+from pathlib import Path
+from typing import Dict, List, Tuple, Union
+
+import fire  # type: ignore
+import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from eflips.model import create_engine
 from geoalchemy2 import WKBElement
 from geoalchemy2.functions import ST_Distance
 from geoalchemy2.shape import to_shape, from_shape
 from lxml import etree
-from multiprocessing import Pool
-from pathlib import Path
 from shapely import Point  # type: ignore
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import Dict, List, Tuple, Union
 from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.ingest.util
@@ -31,7 +31,7 @@ from eflips.ingest.legacy.xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
-from eflips.ingest.util import soldner_to_point
+from eflips.ingest.util import soldner_to_pointz, geometry_has_z
 
 
 def load_and_validate_xml(filename: Path) -> Linienfahrplan:
@@ -92,6 +92,10 @@ def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, se
         .filter(eflips.model.Station.id == id)
         .one_or_none()
     )
+    if geometry_has_z():
+        dummy_geom = from_shape(Point(0.0, 0.0, 0.0), srid=4326)  # Will be set later
+    else:
+        dummy_geom = from_shape(Point(0.0, 0.0), srid=4326)  # Will be set later
     if station is None:
         station = eflips.model.Station(
             scenario_id=scenario_id,
@@ -99,7 +103,7 @@ def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, se
             name=name,
             name_short=name_short,
             is_electrified=False,
-            geom=from_shape(Point(0.0, 0.0), srid=4326),  # Will be set later
+            geom=dummy_geom,  # Will be set later
         )
         session.add(station)
     return station
@@ -181,7 +185,7 @@ def add_or_ret_station_for_grid_point(
                 f"Station for grid point {gridpoint_id} not found, even though it is of type 'BPUNKT' and should have a station"
             )
             # Here, we can actually calculate the coordinates already
-            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
             station = eflips.model.Station(
                 scenario_id=scenario_id,
@@ -221,7 +225,7 @@ def add_or_ret_station_for_grid_point(
         )
         if station is None:
             # Here, we can actually calculate the coordinates already
-            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
             station = eflips.model.Station(
                 scenario_id=scenario_id,
@@ -557,7 +561,7 @@ def create_routes_and_time_profiles(
             # Load data to be used later
             station = add_or_ret_station_for_grid_point(scenario_id, point.netzpunkt, grid_points, session)
             grid_point = grid_points[point.netzpunkt]
-            geom = soldner_to_point(grid_point.xkoordinate, grid_point.ykoordinate)
+            geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
             # Temporal: Update driving times
             driving_times: Dict[int, Tuple[timedelta, timedelta]] = {}  # Order: driving, waiting
@@ -934,7 +938,6 @@ def create_trips_and_vehicle_schedules(
 
 def recenter_station(station: eflips.model.Station, session: Session) -> None:
     """
-
     Puts a station's location at the median of it's associations
     :param station:
     :param session:
@@ -942,25 +945,45 @@ def recenter_station(station: eflips.model.Station, session: Session) -> None:
     """
     # For each association, load the location and add it to a list
     xs, ys = [], []
+
+    has_z = geometry_has_z()
+
+    if has_z:
+        zs = []
+
     for assoc in station.assoc_route_stations:
         if isinstance(assoc.location, str):
-            loc_str = assoc.location.lstrip("SRID=4326;POINT(").rstrip(")")
-            x, y = loc_str.split(" ")
-            x_f, y_f = float(x), float(y)
+            if has_z:
+                loc_str = assoc.location.lstrip("SRID=4326;POINTZ(").rstrip(")")
+                x, y, z = loc_str.split(" ")
+                x_f, y_f, z_f = float(x), float(y), float(z)
+            else:
+                loc_str = assoc.location.lstrip("SRID=4326;POINT(").rstrip(")")
+                x, y = loc_str.split(" ")
+                x_f, y_f = float(x), float(y)
             xs.append(x_f)
             ys.append(y_f)
+            if has_z:
+                zs.append(z_f)
         else:
             assert isinstance(assoc.location, WKBElement)
             shape = to_shape(assoc.location)  # typ
             xs.append(shape.x)
             ys.append(shape.y)
+            if has_z:
+                zs.append(shape.z)
 
     # Calculate the median of the list
     median_x = statistics.median(xs)
     median_y = statistics.median(ys)
+    if has_z:
+        median_z = statistics.median(zs)
 
     # Create a new location from the median
-    new_location = f"SRID=4326;POINT({median_x} {median_y})"
+    if has_z:
+        new_location = f"SRID=4326;POINTZ({median_x} {median_y} {median_z})"
+    else:
+        new_location = f"SRID=4326;POINT({median_x} {median_y})"
 
     # Update the station
     station.geom = new_location  # type: ignore
