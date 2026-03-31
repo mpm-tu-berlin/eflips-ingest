@@ -444,31 +444,50 @@ class GtfsIngester(AbstractIngester):
             if progress_callback:
                 progress_callback(current_progress)
 
-            # Step 2: Create Line objects from routes (one line per route_id)
+            # Step 2: Create Line objects from routes (one line per route_short_name)
+            # For the "one line per route_short_name" logic, we need an additional dict
+            lines_by_short_name: Dict[str, Line] = {}
             self.logger.info("Creating Line objects from GTFS routes")
             routes_df = feed.routes
             for idx, route_row in routes_df.iterrows():
                 route_id = route_row["route_id"]
-                route_short_name = route_row.get("route_short_name", route_id)
-                route_long_name = route_row.get("route_long_name", "")
-
-                # Handle pandas NA values properly
-                if pd.isna(route_long_name) or route_long_name == "":
-                    line_name = route_short_name if not pd.isna(route_short_name) else route_id
+                if route_id is None or pd.isna(route_id):
+                    raise ValueError(
+                        f"route_id is required for all routes in GTFS feed, but route at index {idx} has missing route_id"
+                    )
+                gtfs_short_name = route_row.get("route_short_name")
+                if gtfs_short_name is None or pd.isna(gtfs_short_name) or str(gtfs_short_name).strip() == "":
+                    self.logger.warning(
+                        f"route_short_name is missing or empty for route_id {route_id} at index {idx}. "
+                        f"Using route_id as route_short_name."
+                    )
+                    route_short_name_or_id = route_id
                 else:
-                    line_name = route_long_name
+                    route_short_name_or_id = gtfs_short_name
 
-                line = Line(
-                    name=line_name,
-                    name_short=route_short_name if not pd.isna(route_short_name) else route_id,
-                    scenario=scenario,
-                )
-                lines_dict[route_id] = line
-                session.add(line)
-                if always_flush:
-                    session.flush()
+                # The "route_short_name" is similar to a line number, while "route_long_name" is more descriptive.
+                # For the line, we use the route_short_name as both short name and merging key.
+                # The long name is set later.
 
-            self.logger.info(f"Created {len(lines_dict)} lines")
+                if route_short_name_or_id not in lines_by_short_name:
+                    line = Line(
+                        name="TODO – if you're seeing this, the import went wrong!",
+                        name_short=route_short_name_or_id,
+                        scenario=scenario,
+                    )
+                    lines_by_short_name[route_short_name_or_id] = line
+                    lines_dict[route_id] = line
+                    session.add(line)
+                    if always_flush:
+                        session.flush()
+                    self.logger.debug(f"Created line with route_short_name {route_short_name_or_id}")
+                else:
+                    lines_dict[route_id] = lines_by_short_name[route_short_name_or_id]
+                    self.logger.debug(
+                        f"Line with route_short_name {route_short_name_or_id} already exists, skipping creation"
+                    )
+
+            self.logger.info(f"Created {len(lines_by_short_name)} lines")
             current_progress += PROGRESS_LINES
             if progress_callback:
                 progress_callback(current_progress)
@@ -604,6 +623,31 @@ class GtfsIngester(AbstractIngester):
             current_progress += PROGRESS_ROUTES
             if progress_callback:
                 progress_callback(current_progress)
+
+            # Step 3.5: Update Line long names based on the most common stations for each line
+            self.logger.info("Updating Line long names based on most common route_long_name")
+            for line in lines_dict.values():
+                # Get all routes for this line
+                line_routes = [route for route in routes_dict.values() if route.line == line]
+
+                # Get the most common arrival and departure stations for these routes
+                arrival_stations = [route.arrival_station.name for route in line_routes]
+                departure_stations = [route.departure_station.name for route in line_routes]
+                if arrival_stations and departure_stations:
+                    all_stations = set(arrival_stations + departure_stations)
+                    sorted_stations = sorted(
+                        all_stations,
+                        key=lambda s: (arrival_stations.count(s) + departure_stations.count(s)),
+                        reverse=True,
+                    )
+                    if len(sorted_stations) >= 2:
+                        line.name = f"{line.name_short}: {sorted_stations[0]} <-> {sorted_stations[1]}"
+                    elif len(sorted_stations) == 1:
+                        line.name = f"{line.name_short}: {sorted_stations[0]}"
+                    else:
+                        line.name = line.name_short
+                else:
+                    line.name = line.name_short
 
             # Step 4: Create a default VehicleType (required for Rotation)
             # This is a placeholder - in a real scenario, vehicle types should be configured
