@@ -261,6 +261,9 @@ class GtfsIngester(AbstractIngester):
             "feed": feed,
             "gtfs_zip_file": gtfs_zip_file,
             "tz": tz,
+            "agency_name": agency_name,
+            "start_date": start_date,
+            "duration": duration,
         }
 
         with open(save_path / "gtfs_data.dill", "wb") as f:
@@ -349,7 +352,8 @@ class GtfsIngester(AbstractIngester):
 
             # Create scenario and add to database
             scenario = Scenario(
-                name=f"GTFS Import from {str(gtfs_zip_file)} @ {datetime.now().isoformat()}",
+                name=f"{prepared_data['agency_name']} GTFS Import ({prepared_data['start_date']} "
+                f"for {prepared_data['duration']}) (file: {gtfs_zip_file.name})",
             )
             session.add(scenario)
             if always_flush:
@@ -989,6 +993,13 @@ class GtfsIngester(AbstractIngester):
                 progress_callback(current_progress)
 
             self.logger.info("GTFS to eflips model conversion completed")
+
+            # In the previous steps, we stored the stop_id in name_short. This was done to make some lookups
+            # easier during the conversion process. Now that we are done with all the conversions, we can clear
+            # the name_short field for stations to avoid confusion.
+            session.query(Station).filter(Station.scenario == scenario).update({Station.name_short: None})
+            if always_flush:
+                session.flush()
 
             # Commit the transaction
             self.logger.info("Committing transaction to database")
