@@ -261,7 +261,9 @@ class GtfsIngester(AbstractIngester):
             "feed": feed,
             "gtfs_zip_file": gtfs_zip_file,
             "tz": tz,
-            "agency_name": agency_name,
+            "agency_name": feed.agency.iloc[0]["agency_name"]
+            if "agency_name" in feed.agency.columns
+            else "Unknown Agency",
             "start_date": start_date,
             "duration": duration,
         }
