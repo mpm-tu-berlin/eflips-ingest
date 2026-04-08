@@ -1,4 +1,6 @@
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import os.path
 from pathlib import Path
 from uuid import UUID
@@ -342,3 +344,95 @@ class TestGtfsIngester(BaseIngester):
         )
         assert success
         assert isinstance(result, UUID)
+
+
+class TestParseGtfsTime:
+    """Unit tests for ``GtfsIngester.parse_gtfs_time``.
+
+    These tests pin the spec-literal "noon minus 12h" interpretation of GTFS
+    times, which is what protects DST transition days from producing
+    non-monotonic UTC instants. The function is a ``@staticmethod`` so the
+    tests do not need any database or ingester fixtures.
+
+    Each assertion compares ``result.astimezone(timezone.utc)`` rather than
+    the wall-clock representation. Comparing two aware datetimes that share a
+    ``tzinfo`` instance falls into Python's same-tzinfo fast path, which
+    operates on naive wall-clock components and ignores per-instance offsets
+    -- exactly the trap that hid the original bug from the in-memory
+    ``sorted(...)`` ordering check.
+    """
+
+    BERLIN = ZoneInfo("Europe/Berlin")
+
+    def test_normal_day(self) -> None:
+        """On a non-DST day, GTFS HH:MM:SS should match local wall clock."""
+        base_date = datetime(2026, 3, 28, tzinfo=self.BERLIN)
+        result = GtfsIngester.parse_gtfs_time("14:30:00", base_date)
+
+        assert result.astimezone(timezone.utc) == datetime(2026, 3, 28, 13, 30, tzinfo=timezone.utc)
+
+    def test_spring_forward_day_brackets_dst_gap(self) -> None:
+        """Regression test for the original bug.
+
+        On 2026-03-29 in Europe/Berlin the local clock jumps from 02:00 CET
+        directly to 03:00 CEST. A trip with stops at "2:55:00" and "3:19:00"
+        previously produced an arrival before the departure in UTC, tripping
+        the Trip CHECK constraint. After the fix, both times must be
+        monotonic in UTC and equal the spec's "noon minus 12h" anchor +
+        offset.
+        """
+        base_date = datetime(2026, 3, 29, tzinfo=self.BERLIN)
+
+        early = GtfsIngester.parse_gtfs_time("2:55:00", base_date)
+        late = GtfsIngester.parse_gtfs_time("3:19:00", base_date)
+
+        # Spec: noon = 12:00 CEST = 10:00 UTC, anchor = 22:00 UTC the day
+        # before. early = anchor + 2h55m = 00:55 UTC, late = anchor + 3h19m
+        # = 01:19 UTC.
+        assert early.astimezone(timezone.utc) == datetime(2026, 3, 29, 0, 55, tzinfo=timezone.utc)
+        assert late.astimezone(timezone.utc) == datetime(2026, 3, 29, 1, 19, tzinfo=timezone.utc)
+
+        # The actual constraint that the SQL CHECK enforces.
+        assert early.astimezone(timezone.utc) < late.astimezone(timezone.utc)
+
+    def test_fall_back_day(self) -> None:
+        """On 2025-10-26 in Europe/Berlin the clock falls back at 03:00 CEST.
+
+        Noon is 12:00 CET = 11:00 UTC, so the anchor is 23:00 UTC on
+        2025-10-25. "12:00:00" must still land at noon local; "01:00:00"
+        must land at the *first* occurrence of 02:00 local (CEST), which is
+        00:00 UTC on the service day.
+        """
+        base_date = datetime(2025, 10, 26, tzinfo=self.BERLIN)
+
+        noon = GtfsIngester.parse_gtfs_time("12:00:00", base_date)
+        one_am = GtfsIngester.parse_gtfs_time("01:00:00", base_date)
+
+        assert noon.astimezone(timezone.utc) == datetime(2025, 10, 26, 11, 0, tzinfo=timezone.utc)
+        assert one_am.astimezone(timezone.utc) == datetime(2025, 10, 26, 0, 0, tzinfo=timezone.utc)
+
+    def test_overflow_past_midnight(self) -> None:
+        """GTFS times can exceed 24:00:00 for trips that span midnight."""
+        base_date = datetime(2026, 3, 28, tzinfo=self.BERLIN)
+
+        result = GtfsIngester.parse_gtfs_time("25:35:00", base_date)
+
+        # 2026-03-28 is a normal day, anchor = local midnight = 23:00 UTC
+        # the previous day. + 25h35m = 00:35 UTC on 2026-03-29.
+        assert result.astimezone(timezone.utc) == datetime(2026, 3, 29, 0, 35, tzinfo=timezone.utc)
+
+    def test_naive_base_date_falls_back_and_warns(self, caplog) -> None:
+        """A naive ``base_date`` is a caller bug; we still produce a result
+        via direct timedelta addition, but we log a WARNING so it gets
+        noticed."""
+        naive_base = datetime(2026, 3, 28)
+
+        with caplog.at_level(logging.WARNING, logger="eflips.ingest.gtfs"):
+            result = GtfsIngester.parse_gtfs_time("14:30:00", naive_base)
+
+        assert result == datetime(2026, 3, 28, 14, 30)
+        assert result.tzinfo is None
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "expected a WARNING for naive base_date"
+        assert any("naive base_date" in r.getMessage() for r in warnings)

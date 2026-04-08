@@ -13,7 +13,7 @@ from eflips.ingest.util import get_altitude, geometry_has_z
 import uuid
 import warnings
 from datetime import date as date_type
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from eflips.model import (
     Station,
     Line,
@@ -278,15 +278,68 @@ class GtfsIngester(AbstractIngester):
         """
         Parse GTFS time format (HH:MM:SS) which can exceed 24 hours.
 
-        :param time_str: Time string in HH:MM:SS format
-        :param base_date: Base datetime to add the time to (should have timezone info)
-        :return: Datetime object representing the parsed time
+        Per the GTFS Schedule reference (Field Types - Time):
+
+            The time is measured from "noon minus 12h" of the service day
+            (effectively midnight except for days on which daylight savings
+            time changes occur).
+
+        https://gtfs.org/documentation/schedule/reference/#field-types
+
+        We follow this definition literally rather than the more common
+        shortcut of adding the parsed HH:MM:SS to local midnight: on DST
+        transition days, "noon minus 12h" differs from local midnight by
+        exactly the DST offset, and using local midnight produces non-
+        monotonic UTC instants for stops bracketing the DST gap (which
+        then trip the Trip.arrival_time > Trip.departure_time CHECK
+        constraint at insert time).
+
+        :param time_str: Time string in HH:MM:SS format. May exceed 24:00:00
+                         for trips that continue past the end of the service
+                         day.
+        :param base_date: A datetime whose date components identify the
+                          service day. If timezone-aware, the result is
+                          returned in the same timezone; if naive, the GTFS
+                          delta is added directly (no DST to consider) and
+                          a warning is logged.
+        :return: Datetime object representing the parsed time.
         """
         parts = time_str.split(":")
         hours = int(parts[0])
         minutes = int(parts[1])
         seconds = int(parts[2])
-        return base_date + timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        delta = timedelta(hours=hours, minutes=minutes, seconds=seconds)
+
+        if base_date.tzinfo is None:
+            # No timezone information - fall back to wall-clock addition. The
+            # callers in this module always pass a tz-aware base_date, so a
+            # naive value here is a bug upstream that would produce silently
+            # wrong results on DST transition days. Warn loudly so it gets
+            # noticed.
+            logging.getLogger(__name__).warning(
+                "parse_gtfs_time called with naive base_date %r; DST handling "
+                "is disabled and results will be incorrect on DST transition "
+                "days. Pass a timezone-aware base_date.",
+                base_date,
+            )
+            return base_date + delta
+
+        # Step 1: locate noon (local) on the service day. Noon always exists
+        # exactly once: DST transitions happen in the early hours, never at
+        # midday.
+        noon_local = base_date.replace(hour=12, minute=0, second=0, microsecond=0)
+
+        # Step 2: subtract 12 hours of REAL elapsed time to obtain the
+        # service-day anchor. We move through UTC for the subtraction -
+        # subtracting a timedelta directly from an aware datetime would
+        # re-derive the offset on the new wall clock, which is exactly the
+        # class of mistake this function is being rewritten to avoid.
+        noon_utc = noon_local.astimezone(timezone.utc)
+        anchor_utc = noon_utc - timedelta(hours=12)
+
+        # Step 3: add the GTFS offset as real elapsed time, then project the
+        # result back into the original timezone.
+        return (anchor_utc + delta).astimezone(base_date.tzinfo)
 
     def parent_station_id_exists(self, parent_station_id: Any) -> bool:
         """Check is a given parent_station_id value is "filled" (not null/NA/empty)"""
