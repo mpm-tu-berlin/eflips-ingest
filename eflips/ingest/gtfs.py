@@ -1143,6 +1143,7 @@ class GtfsIngester(AbstractIngester):
             "start_date": "Start date for the import (ISO 8601 format, e.g., '2024-01-15')",
             "duration": "Duration to import ('DAY' or 'WEEK')",
             "agency_name": "Agency name (required if feed contains multiple agencies)",
+            "agency_id": "Agency ID (alternative to agency_name)",
             "bus_only": "Filter to only import bus routes (default: True)",
         }
 
@@ -1171,6 +1172,9 @@ class GtfsIngester(AbstractIngester):
             "feed contains multiple agencies. If the feed contains only one agency, this parameter is optional and "
             "will be ignored. The agency name must match the 'agency_name' field in agency.txt exactly. If not "
             "specified for a multi-agency feed, an error will be returned listing all available agencies.",
+            "agency_id": "The ID of the agency to import from the GTFS feed. Can be used as an alternative to "
+            "agency_name. The agency ID must match the 'agency_id' field in agency.txt exactly. Accepts a single "
+            "string or an iterable of strings to select multiple agencies.",
             "bus_only": "If True (default), only bus routes will be imported from the GTFS feed. This includes routes "
             "with route_type of 3 (standard GTFS bus) or 700-799 (extended GTFS bus types). If False, all route types "
             "will be imported. If set to True and the feed contains no bus routes, an error will be returned.",
