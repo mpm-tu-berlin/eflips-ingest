@@ -34,7 +34,7 @@ from gtfs_kit import Feed
 from pathlib import Path
 from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
-from typing import Dict, Callable, Tuple, List, Any
+from typing import Dict, Callable, Iterable, Tuple, List, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -94,7 +94,8 @@ class GtfsIngester(AbstractIngester):
         start_date: str,
         progress_callback: None | Callable[[float], None] = None,
         duration: str = "WEEK",
-        agency_name: str = "",
+        agency_name: str | Iterable[str] = "",
+        agency_id: str | Iterable[str] = "",
         bus_only: bool = True,
     ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
@@ -131,7 +132,10 @@ class GtfsIngester(AbstractIngester):
         :param gtfs_zip_file: Path to the GTFS zip file
         :param start_date: Start date for import in ISO 8601 format (YYYY-MM-DD)
         :param duration: Duration of import period ('DAY' or 'WEEK')
-        :param agency_name: Name of the agency to import (required if feed contains multiple agencies)
+        :param agency_name: Name of the agency to import, or an iterable of names to combine
+            (required if feed contains multiple agencies, unless ``agency_id`` is given)
+        :param agency_id: Id of the agency to import, or an iterable of ids to combine
+            (may be used instead of, or together with, ``agency_name``)
         :param bus_only: If True (default), only import bus routes (route_type 3 or 700-799)
         :param progress_callback: Optional callback function for progress updates
         :return: A tuple containing a boolean indicating whether the input data is valid and either a UUID or a dictionary
@@ -156,7 +160,7 @@ class GtfsIngester(AbstractIngester):
             feed.stops["parent_station"] = pd.NA
 
         # Handle multi-agency feeds
-        agency_filter_result = self.filter_feed_by_agency(feed, agency_name)
+        agency_filter_result = self.filter_feed_by_agency(feed, agency_name, agency_id)
         if isinstance(agency_filter_result, tuple):
             # Error occurred
             return agency_filter_result
@@ -265,8 +269,8 @@ class GtfsIngester(AbstractIngester):
             "feed": feed,
             "gtfs_zip_file": gtfs_zip_file,
             "tz": tz,
-            "agency_name": feed.agency.iloc[0]["agency_name"]
-            if "agency_name" in feed.agency.columns
+            "agency_name": " / ".join(feed.agency["agency_name"].tolist())
+            if "agency_name" in feed.agency.columns and len(feed.agency) > 0
             else "Unknown Agency",
             "start_date": start_date,
             "duration": duration,
@@ -1172,17 +1176,27 @@ class GtfsIngester(AbstractIngester):
             "will be imported. If set to True and the feed contains no bus routes, an error will be returned.",
         }
 
-    def filter_feed_by_agency(self, feed: Feed, agency_name: str | None) -> Feed | Tuple[bool, Dict[str, str]]:
+    def filter_feed_by_agency(
+        self,
+        feed: Feed,
+        agency_name: str | Iterable[str] | None = None,
+        agency_id: str | Iterable[str] | None = None,
+    ) -> Feed | Tuple[bool, Dict[str, str]]:
         """
-        Filter the GTFS feed to include only data from a specific agency.
+        Filter the GTFS feed to include only data from one or more agencies.
 
-        If the feed contains multiple agencies and no agency_name is specified,
-        returns an error tuple with available agency names.
+        Agencies can be selected by name, by id, or by a combination of both.
+        Each selector accepts either a single string or an iterable of strings,
+        allowing callers that operate a shared depot across multiple "paper"
+        agencies to pass all of them in a single call.
 
-        If the feed contains only one agency, the agency_name parameter is ignored.
+        If the feed contains only one agency, both selectors are ignored.
+        If the feed contains multiple agencies and neither selector is given,
+        returns an error tuple with the list of available agencies.
 
         :param feed: A gtfs_kit Feed object
-        :param agency_name: Name of the agency to filter by (optional if single-agency feed)
+        :param agency_name: Name(s) of agencies to keep (str or iterable of str)
+        :param agency_id: Id(s) of agencies to keep (str or iterable of str)
         :return: Filtered Feed object, or error tuple (False, error_dict)
         """
         if feed.agency is None or len(feed.agency) == 0:
@@ -1190,41 +1204,70 @@ class GtfsIngester(AbstractIngester):
 
         num_agencies = len(feed.agency)
 
+        def _normalise(selector: str | Iterable[str] | None) -> List[str]:
+            if selector is None:
+                return []
+            if isinstance(selector, str):
+                return [selector] if selector != "" else []
+            return [s for s in selector if s != ""]
+
+        wanted_names = _normalise(agency_name)
+        wanted_ids = _normalise(agency_id)
+
         # Single agency - no filtering needed
         if num_agencies == 1:
-            if agency_name and agency_name != "":
-                self.logger.info(f"Feed contains only one agency, ignoring agency_name parameter '{agency_name}'")
+            if wanted_names or wanted_ids:
+                self.logger.info(
+                    f"Feed contains only one agency, ignoring agency_name={wanted_names!r} " f"agency_id={wanted_ids!r}"
+                )
             return feed
 
-        # Multiple agencies - agency_name is required
-        if not agency_name or agency_name == "":
-            # Build helpful error message with list of available agencies
+        # Multiple agencies - at least one selector is required
+        if not wanted_names and not wanted_ids:
             agency_names = feed.agency["agency_name"].tolist()
             agency_list = "\n".join(f"  - {name}" for name in agency_names)
             error_msg = (
                 f"The GTFS feed contains {num_agencies} agencies. "
-                f"Please specify which agency to import using the 'agency_name' parameter.\n\n"
+                f"Please specify which agency or agencies to import using the "
+                f"'agency_name' or 'agency_id' parameter (a single string or a "
+                f"list of strings is accepted).\n\n"
                 f"Available agencies:\n{agency_list}"
             )
             return (False, {"agency_name": error_msg})
 
-        # Find the agency by name
-        matching_agencies = feed.agency[feed.agency["agency_name"] == agency_name]
+        matched_by_name = feed.agency[feed.agency["agency_name"].isin(wanted_names)] if wanted_names else None
+        matched_by_id = feed.agency[feed.agency["agency_id"].astype(str).isin(wanted_ids)] if wanted_ids else None
 
-        if len(matching_agencies) == 0:
-            # Agency name not found
-            agency_names = feed.agency["agency_name"].tolist()
-            agency_list = "\n".join(f"  - {name}" for name in agency_names)
-            error_msg = f"Agency '{agency_name}' not found in GTFS feed.\n\n" f"Available agencies:\n{agency_list}"
-            return (False, {"agency_name": error_msg})
+        errors: Dict[str, str] = {}
+        if matched_by_name is not None:
+            missing_names = sorted(set(wanted_names) - set(matched_by_name["agency_name"]))
+            if missing_names:
+                agency_names_list = feed.agency["agency_name"].tolist()
+                agency_list = "\n".join(f"  - {name}" for name in agency_names_list)
+                errors["agency_name"] = (
+                    f"Agency name(s) {missing_names} not found in GTFS feed.\n\n" f"Available agencies:\n{agency_list}"
+                )
+        if matched_by_id is not None:
+            missing_ids = sorted(set(wanted_ids) - set(matched_by_id["agency_id"].astype(str)))
+            if missing_ids:
+                agency_ids_list = feed.agency["agency_id"].astype(str).tolist()
+                agency_list = "\n".join(f"  - {aid}" for aid in agency_ids_list)
+                errors["agency_id"] = (
+                    f"Agency id(s) {missing_ids} not found in GTFS feed.\n\n" f"Available agency ids:\n{agency_list}"
+                )
+        if errors:
+            return (False, errors)
 
-        # Get the agency_id for filtering
-        agency_id = matching_agencies.iloc[0]["agency_id"]
-        self.logger.info(f"Filtering feed to agency '{agency_name}' (ID: {agency_id})")
+        frames = [df for df in (matched_by_name, matched_by_id) if df is not None]
+        combined = pd.concat(frames).drop_duplicates(subset=["agency_id"])
+        agency_ids_to_keep = list(combined["agency_id"])
+        self.logger.info(
+            f"Filtering feed to {len(agency_ids_to_keep)} agency/agencies "
+            f"(ids: {agency_ids_to_keep}, names: {list(combined['agency_name'])})"
+        )
 
-        # Use gtfs_kit's restrict_to_agencies to filter the feed
         try:
-            filtered_feed = feed.restrict_to_agencies([agency_id])
+            filtered_feed = feed.restrict_to_agencies(agency_ids_to_keep)
             assert isinstance(filtered_feed, Feed)
             self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")
             return filtered_feed
