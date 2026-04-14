@@ -65,6 +65,44 @@ class TestGtfsIngester(BaseIngester):
         return sample_path.resolve()
 
     @pytest.fixture()
+    def multi_agency_feed_zip(self, sample_feed_1, tmp_path) -> Path:
+        """Multi-agency GTFS zip built in-memory from sample-feed-1.
+
+        The source feed has a single agency; we triplicate the agency row with
+        distinct ids/names and round-robin distribute the routes across them
+        so each agency owns at least one route. All trip/stop_times/calendar
+        rows keep their original route_ids, so downstream filtering still
+        works.
+        """
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        base_row = feed.agency.iloc[0].to_dict()
+        new_agencies = []
+        for aid, aname in [
+            ("A1", "Agency One"),
+            ("A2", "Agency Two"),
+            ("A3", "Agency Three"),
+        ]:
+            row = dict(base_row)
+            row["agency_id"] = aid
+            row["agency_name"] = aname
+            new_agencies.append(row)
+        import pandas as pd
+
+        feed.agency = pd.DataFrame(new_agencies)
+
+        routes = feed.routes.reset_index(drop=True).copy()
+        assigned_ids = [["A1", "A2", "A3"][i % 3] for i in range(len(routes))]
+        routes["agency_id"] = assigned_ids
+        feed.routes = routes
+
+        if feed.stops is not None and "parent_station" not in feed.stops.columns:
+            feed.stops["parent_station"] = pd.NA
+
+        out_path = tmp_path / "multi_agency.zip"
+        feed.to_file(out_path)
+        return out_path
+
+    @pytest.fixture()
     def vbb_feed(self) -> Path:
         """Path to VBB GTFS feed (multi-agency, used ONLY for agency filtering tests)."""
         path_of_this_file = Path(os.path.dirname(__file__))
@@ -357,6 +395,67 @@ class TestGtfsIngester(BaseIngester):
         )
         assert success
         assert isinstance(result, UUID)
+
+    # ====================
+    # Multi-Agency Selector Tests (list/iterable of names or ids)
+    # ====================
+
+    def test_multi_agency_list_of_names(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        result = ingester.filter_feed_by_agency(feed, agency_name=["Agency One", "Agency Two"])
+        assert isinstance(result, gk.Feed)
+        assert set(result.agency["agency_name"]) == {"Agency One", "Agency Two"}
+        assert set(result.routes["agency_id"]) <= {"A1", "A2"}
+
+    def test_multi_agency_list_of_ids(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        result = ingester.filter_feed_by_agency(feed, agency_id=["A1", "A3"])
+        assert isinstance(result, gk.Feed)
+        assert set(result.agency["agency_id"].astype(str)) == {"A1", "A3"}
+
+    def test_multi_agency_mixed_names_and_ids(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        result = ingester.filter_feed_by_agency(feed, agency_name=["Agency One"], agency_id=["A2"])
+        assert isinstance(result, gk.Feed)
+        assert set(result.agency["agency_id"].astype(str)) == {"A1", "A2"}
+
+    def test_multi_agency_single_string_still_works(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        result = ingester.filter_feed_by_agency(feed, agency_name="Agency One")
+        assert isinstance(result, gk.Feed)
+        assert list(result.agency["agency_name"]) == ["Agency One"]
+
+    def test_multi_agency_partial_miss_reports_error(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        result = ingester.filter_feed_by_agency(feed, agency_name=["Agency One", "Nope"])
+        assert isinstance(result, tuple)
+        success, error_dict = result
+        assert success is False
+        assert "agency_name" in error_dict
+        assert "Nope" in error_dict["agency_name"]
+
+    def test_prepare_multi_agency_list_scenario_name(self, ingester, multi_agency_feed_zip) -> None:
+        feed = gk.read_feed(multi_agency_feed_zip, dist_units="m")
+        validity = ingester.get_feed_validity_period(feed)
+        start_date = datetime.strptime(validity[0], "%Y%m%d").date()
+
+        success, result = ingester.prepare(
+            progress_callback=None,
+            gtfs_zip_file=multi_agency_feed_zip,
+            start_date=start_date.isoformat(),
+            duration="DAY",
+            agency_name=["Agency One", "Agency Two"],
+            bus_only=False,
+        )
+        assert success, result
+        assert isinstance(result, UUID)
+
+        import pickle
+
+        save_path = ingester.path_for_uuid(result)
+        with open(save_path / "gtfs_data.dill", "rb") as f:
+            data = pickle.load(f)
+        assert data["agency_name"] == "Agency One / Agency Two"
 
 
 class TestParseGtfsTime:

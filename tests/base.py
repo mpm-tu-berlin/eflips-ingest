@@ -96,7 +96,10 @@ class BaseIngester(ABC):
                 continue
             if param.annotation in [str, int, float, bool, pathlib.Path]:
                 continue
-            elif issubclass(param.annotation, Enum):
+            elif inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
+                continue
+            elif not inspect.isclass(param.annotation):
+                # Union types (e.g. str | Iterable[str]) are not classes
                 continue
             else:
                 raise AssertionError(f"Invalid parameter type {param.annotation} for parameter {param.name}.")
@@ -115,7 +118,7 @@ class BaseIngester(ABC):
             if param.name == "progress_callback":
                 continue
             assert param.name in ingester.prepare_param_names().keys()
-            if issubclass(param.annotation, Enum):
+            if inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
                 assert isinstance(ingester.prepare_param_names()[param.name], dict)
                 for value in param.annotation:
                     assert value in ingester.prepare_param_names()[param.name].keys()
@@ -136,7 +139,7 @@ class BaseIngester(ABC):
             if param.name == "progress_callback":
                 continue
             assert param.name in ingester.prepare_param_description().keys()
-            if issubclass(param.annotation, Enum):
+            if inspect.isclass(param.annotation) and issubclass(param.annotation, Enum):
                 assert isinstance(ingester.prepare_param_description()[param.name], dict)
                 for value in param.annotation:
                     assert value in ingester.prepare_param_description()[param.name].keys()
