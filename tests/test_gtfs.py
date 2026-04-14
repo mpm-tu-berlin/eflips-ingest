@@ -144,14 +144,28 @@ class TestGtfsIngester(BaseIngester):
         validity = ingester.get_feed_validity_period(feed)
         start_date = datetime.strptime(validity[0], "%Y%m%d").date()
 
-        # Note: sample-feed-1 has no parent_station column, so we use bus_only=False
-        # to avoid gtfs_kit filtering issues (all routes are buses anyway)
         success, result = ingester.prepare(
             progress_callback=None,
             gtfs_zip_file=sample_feed_1,
             start_date=start_date.isoformat(),
             duration="DAY",
             bus_only=False,
+        )
+        assert success
+        assert isinstance(result, UUID)
+
+    def test_prepare_sample_feed_1_bus_only(self, ingester, sample_feed_1) -> None:
+        """Test that sample-feed-1.zip works with bus_only=True despite missing parent_station column."""
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        validity = ingester.get_feed_validity_period(feed)
+        start_date = datetime.strptime(validity[0], "%Y%m%d").date()
+
+        success, result = ingester.prepare(
+            progress_callback=None,
+            gtfs_zip_file=sample_feed_1,
+            start_date=start_date.isoformat(),
+            duration="DAY",
+            bus_only=True,
         )
         assert success
         assert isinstance(result, UUID)
@@ -182,7 +196,6 @@ class TestGtfsIngester(BaseIngester):
         validity = ingester.get_feed_validity_period(feed)
         start_date = datetime.strptime(validity[0], "%Y%m%d").date()
 
-        # Note: sample-feed-1 has no parent_station column, so we use bus_only=False
         success, uuid = ingester.prepare(
             progress_callback=None,
             gtfs_zip_file=sample_feed_1,
