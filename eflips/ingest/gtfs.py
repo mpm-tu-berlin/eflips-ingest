@@ -151,6 +151,10 @@ class GtfsIngester(AbstractIngester):
         # Read the GTFS feed
         feed = gk.read_feed(gtfs_zip_file, dist_units="m")
 
+        # Ensure stops has a parent_station column (optional in GTFS spec, but required by gtfs_kit filtering)
+        if feed.stops is not None and "parent_station" not in feed.stops.columns:
+            feed.stops["parent_station"] = pd.NA
+
         # Handle multi-agency feeds
         agency_filter_result = self.filter_feed_by_agency(feed, agency_name)
         if isinstance(agency_filter_result, tuple):
