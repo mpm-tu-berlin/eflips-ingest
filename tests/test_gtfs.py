@@ -1,16 +1,15 @@
 import logging
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 import os.path
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
+import gtfs_kit as gk
 import pytest
 
 from eflips.ingest.gtfs import GtfsIngester
 from tests.base import BaseIngester
-import gtfs_kit as gk
-
 from tests.conftest import mock_get_altitude
 
 
@@ -456,6 +455,108 @@ class TestGtfsIngester(BaseIngester):
         with open(save_path / "gtfs_data.dill", "rb") as f:
             data = pickle.load(f)
         assert data["agency_name"] == "Agency One / Agency Two"
+
+    # ====================
+    # Route ID Selector Tests (filter_feed_by_route_ids)
+    # ====================
+
+    ALL_SAMPLE_FEED_1_ROUTES = {"AB", "BFC", "STBA", "CITY", "AAMV"}
+
+    @staticmethod
+    def _read_sample_feed_1_with_parent_station(sample_feed_1_path):
+        """Load sample-feed-1 and add an empty parent_station column.
+
+        Mirrors the pre-processing that ``GtfsIngester.prepare`` performs
+        (gtfs.py:160-161). gtfs_kit's ``restrict_to_routes`` raises KeyError on
+        'parent_station' when the column is absent, so direct-method tests
+        must add it the same way ``prepare`` does.
+        """
+        import pandas as pd
+
+        feed = gk.read_feed(sample_feed_1_path, dist_units="m")
+        if feed.stops is not None and "parent_station" not in feed.stops.columns:
+            feed.stops["parent_station"] = pd.NA
+        return feed
+
+    def test_route_ids_single_string(self, ingester, sample_feed_1) -> None:
+        feed = self._read_sample_feed_1_with_parent_station(sample_feed_1)
+        result = ingester.filter_feed_by_route_ids(feed, "AB")
+        assert isinstance(result, gk.Feed)
+        assert set(result.routes["route_id"].astype(str)) == {"AB"}
+        # Cascading: trips should only reference the retained route.
+        assert set(result.trips["route_id"].astype(str)) == {"AB"}
+
+    def test_route_ids_list(self, ingester, sample_feed_1) -> None:
+        feed = self._read_sample_feed_1_with_parent_station(sample_feed_1)
+        result = ingester.filter_feed_by_route_ids(feed, ["AB", "CITY"])
+        assert isinstance(result, gk.Feed)
+        assert set(result.routes["route_id"].astype(str)) == {"AB", "CITY"}
+
+    def test_route_ids_none_is_noop(self, ingester, sample_feed_1) -> None:
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        result = ingester.filter_feed_by_route_ids(feed, None)
+        assert isinstance(result, gk.Feed)
+        assert set(result.routes["route_id"].astype(str)) == self.ALL_SAMPLE_FEED_1_ROUTES
+
+    def test_route_ids_empty_string_is_noop(self, ingester, sample_feed_1) -> None:
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        result = ingester.filter_feed_by_route_ids(feed, "")
+        assert isinstance(result, gk.Feed)
+        assert set(result.routes["route_id"].astype(str)) == self.ALL_SAMPLE_FEED_1_ROUTES
+
+    def test_route_ids_empty_list_is_noop(self, ingester, sample_feed_1) -> None:
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        result = ingester.filter_feed_by_route_ids(feed, [])
+        assert isinstance(result, gk.Feed)
+        assert set(result.routes["route_id"].astype(str)) == self.ALL_SAMPLE_FEED_1_ROUTES
+
+    def test_route_ids_missing_reports_error(self, ingester, sample_feed_1) -> None:
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        result = ingester.filter_feed_by_route_ids(feed, ["AB", "NOPE"])
+        assert isinstance(result, tuple)
+        success, error_dict = result
+        assert success is False
+        assert "route_ids" in error_dict
+        message = error_dict["route_ids"]
+        assert "NOPE" in message
+        # Only "NOPE" is missing; "AB" must not appear in the missing-ids list.
+        missing_line = message.splitlines()[0]
+        assert "AB" not in missing_line
+
+    def test_prepare_with_route_ids(self, ingester, sample_feed_1) -> None:
+        feed = gk.read_feed(sample_feed_1, dist_units="m")
+        validity = ingester.get_feed_validity_period(feed)
+        start_date = datetime.strptime(validity[0], "%Y%m%d").date()
+
+        success, result = ingester.prepare(
+            progress_callback=None,
+            gtfs_zip_file=sample_feed_1,
+            start_date=start_date.isoformat(),
+            duration="DAY",
+            route_ids=["AB", "STBA"],
+        )
+        assert success, result
+        assert isinstance(result, UUID)
+
+        import pickle
+
+        save_path = ingester.path_for_uuid(result)
+        with open(save_path / "gtfs_data.dill", "rb") as f:
+            data = pickle.load(f)
+        saved_feed = data["feed"]
+        assert set(saved_feed.routes["route_id"].astype(str)) == {"AB", "STBA"}
+
+    # ====================
+    # _coerce_str_list Unit Test
+    # ====================
+
+    def test_coerce_str_list(self) -> None:
+        coerce = GtfsIngester._coerce_str_list
+        assert coerce(None) == []
+        assert coerce("") == []
+        assert coerce("x") == ["x"]
+        assert coerce(["a", "", "b"]) == ["a", "b"]
+        assert coerce(("a", None, "b")) == ["a", "b"]
 
 
 class TestParseGtfsTime:
