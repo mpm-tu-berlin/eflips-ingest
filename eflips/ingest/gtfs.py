@@ -1,19 +1,21 @@
-import gtfs_kit as gk  # type: ignore [import-untyped]
 import logging
 import os
-import pandas as pd
 import pathlib as pl
 import pickle
 import sys
 import time
-
-from shapely import LineString  # type: ignore [import-untyped]
-
-from eflips.ingest.util import get_altitude, geometry_has_z
 import uuid
 import warnings
 from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Dict, Callable, Iterable, Tuple, List, Any
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
+
+import gtfs_kit as gk  # type: ignore [import-untyped]
+import pandas as pd
 from eflips.model import (
     Station,
     Line,
@@ -28,17 +30,14 @@ from eflips.model import (
     Base,
 )
 from eflips.model import create_engine
-from enum import Enum
 from geoalchemy2.shape import from_shape
 from gtfs_kit import Feed
-from pathlib import Path
+from shapely import LineString  # type: ignore [import-untyped]
 from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
-from typing import Dict, Callable, Iterable, Tuple, List, Any
-from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
 
 from eflips.ingest.base import AbstractIngester
+from eflips.ingest.util import get_altitude, geometry_has_z
 
 
 class GtfsIngester(AbstractIngester):
@@ -97,6 +96,7 @@ class GtfsIngester(AbstractIngester):
         agency_name: str | Iterable[str] = "",
         agency_id: str | Iterable[str] = "",
         bus_only: bool = True,
+        route_ids: str | Iterable[str] | None = None,
     ) -> Tuple[bool, UUID | Dict[str, str]]:
         """
         Prepare and validate the input data for ingestion.
@@ -158,6 +158,14 @@ class GtfsIngester(AbstractIngester):
         # Ensure stops has a parent_station column (optional in GTFS spec, but required by gtfs_kit filtering)
         if feed.stops is not None and "parent_station" not in feed.stops.columns:
             feed.stops["parent_station"] = pd.NA
+
+        # Filter by route_ids if provided
+        if route_ids:
+            route_id_filter_result = self.filter_feed_by_route_ids(feed, route_ids)
+            if isinstance(route_id_filter_result, tuple):
+                # Error occurred
+                return route_id_filter_result
+            feed = route_id_filter_result
 
         # Handle multi-agency feeds
         agency_filter_result = self.filter_feed_by_agency(feed, agency_name, agency_id)
@@ -1145,6 +1153,7 @@ class GtfsIngester(AbstractIngester):
             "agency_name": "Agency name (required if feed contains multiple agencies)",
             "agency_id": "Agency ID (alternative to agency_name)",
             "bus_only": "Filter to only import bus routes (default: True)",
+            "route_ids": "Route id(s) to restrict the import to (optional)",
         }
 
     @classmethod
@@ -1178,7 +1187,25 @@ class GtfsIngester(AbstractIngester):
             "bus_only": "If True (default), only bus routes will be imported from the GTFS feed. This includes routes "
             "with route_type of 3 (standard GTFS bus) or 700-799 (extended GTFS bus types). If False, all route types "
             "will be imported. If set to True and the feed contains no bus routes, an error will be returned.",
+            "route_ids": "Optional route id(s) to restrict the import to. Accepts a single string or an iterable of "
+            "strings matching the 'route_id' field in routes.txt. When provided, the feed is filtered to those "
+            "routes (and their dependent trips, stops, shapes, etc.) before any agency or bus-only filtering. "
+            "If any supplied route id is not present in the feed, an error listing the available route ids is "
+            "returned. If omitted or empty, no route-id filtering is applied.",
         }
+
+    @staticmethod
+    def _coerce_str_list(value: str | Iterable[str] | None) -> List[str]:
+        """Normalise a scalar/iterable/None into a list of non-empty strings.
+
+        ``None`` / ``""`` → ``[]``; a single string → ``[s]``; any iterable of
+        strings → a list with empty entries dropped.
+        """
+        if value is None or value == "":
+            return []
+        if isinstance(value, str):
+            return [value]
+        return [str(v) for v in value if v not in (None, "")]
 
     def filter_feed_by_agency(
         self,
@@ -1208,15 +1235,8 @@ class GtfsIngester(AbstractIngester):
 
         num_agencies = len(feed.agency)
 
-        def _normalise(selector: str | Iterable[str] | None) -> List[str]:
-            if selector is None:
-                return []
-            if isinstance(selector, str):
-                return [selector] if selector != "" else []
-            return [s for s in selector if s != ""]
-
-        wanted_names = _normalise(agency_name)
-        wanted_ids = _normalise(agency_id)
+        wanted_names = self._coerce_str_list(agency_name)
+        wanted_ids = self._coerce_str_list(agency_id)
 
         # Single agency - no filtering needed
         if num_agencies == 1:
@@ -1323,6 +1343,57 @@ class GtfsIngester(AbstractIngester):
             return filtered_feed
         except Exception as e:
             return (False, {"route_type_filter": f"Failed to filter feed by route type: {str(e)}"})
+
+    def filter_feed_by_route_ids(
+        self,
+        feed: Feed,
+        route_ids: str | Iterable[str] | None,
+    ) -> Feed | Tuple[bool, Dict[str, str]]:
+        """
+        Filter the GTFS feed to only the given routes and their dependent data.
+
+        Uses ``Feed.restrict_to_routes`` from gtfs_kit, which cascades the
+        restriction through trips, stop_times, stops (including parent stations),
+        calendar, calendar_dates, shapes, frequencies, and transfers — so the
+        returned feed contains no orphaned ancillary data.
+
+        Empty / None ``route_ids`` is treated as a no-op and returns the feed
+        unchanged, symmetric with ``bus_only=False`` in ``filter_feed_by_route_type``.
+
+        :param feed: A gtfs_kit Feed object
+        :param route_ids: Route id(s) to keep. Accepts a single string, an iterable
+            of strings, or None/"" / [] for "no filter".
+        :return: Filtered Feed object, or error tuple (False, error_dict)
+        """
+        wanted_ids = self._coerce_str_list(route_ids)
+        if not wanted_ids:
+            self.logger.info("No route_ids provided: skipping route-id filter")
+            return feed
+
+        if feed.routes is None or len(feed.routes) == 0:
+            return (False, {"routes": "No routes found in GTFS feed"})
+
+        feed_route_ids = set(feed.routes["route_id"].astype(str))
+        missing = sorted(set(wanted_ids) - feed_route_ids)
+        if missing:
+            available = "\n".join(f"  - {rid}" for rid in sorted(feed_route_ids))
+            return (
+                False,
+                {
+                    "route_ids": (
+                        f"Route id(s) {missing} not found in GTFS feed.\n\n" f"Available route ids:\n{available}"
+                    )
+                },
+            )
+
+        self.logger.info(f"Filtering feed to {len(wanted_ids)} route id(s)")
+        try:
+            filtered_feed = feed.restrict_to_routes(wanted_ids)
+            assert isinstance(filtered_feed, Feed)
+            self.logger.info(f"Feed filtered: {len(feed.routes)} routes → {len(filtered_feed.routes)} routes")
+            return filtered_feed
+        except Exception as e:
+            return (False, {"route_ids_filter": f"Failed to filter feed by route ids: {str(e)}"})
 
     def build_route_geometries(self, feed: Feed) -> Dict[str, Any] | None:
         """
