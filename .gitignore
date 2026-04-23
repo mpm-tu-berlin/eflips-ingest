@@ -3,6 +3,9 @@
 .AppleDouble
 .LSOverride
 
+# Profiling output from bin/profile_gtfs.py
+bin/profile_out/
+
 # Icon must end with two \r
 Icon
 

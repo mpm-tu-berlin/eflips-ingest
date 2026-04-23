@@ -357,6 +357,19 @@ class GtfsIngester(AbstractIngester):
         # result back into the original timezone.
         return (anchor_utc + delta).astimezone(base_date.tzinfo)
 
+    @staticmethod
+    def _parse_gtfs_time_with_anchor(time_str: str, anchor_utc: datetime, tz: Any) -> datetime:
+        """Fast path for parse_gtfs_time when the per-service-day anchor is known.
+
+        The anchor is ``noon_local.astimezone(UTC) - 12h`` for the service day; see
+        :meth:`parse_gtfs_time` for the rationale. Callers that parse many times on
+        the same service day should precompute one anchor per day and pass it here
+        instead of reconstructing the tz conversion per call.
+        """
+        parts = time_str.split(":")
+        delta = timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=int(parts[2]))
+        return (anchor_utc + delta).astimezone(tz)
+
     def parent_station_id_exists(self, parent_station_id: Any) -> bool:
         """Check is a given parent_station_id value is "filled" (not null/NA/empty)"""
         if isinstance(parent_station_id, str):
@@ -442,7 +455,8 @@ class GtfsIngester(AbstractIngester):
             # parent statiosn are added to the dict under all stop_ids, so that we can link them later.
             self.logger.info("Creating Station objects from GTFS stops")
             stops_df = feed.stops
-            for idx, stop_row in stops_df.iterrows():
+            stops_by_id = {row["stop_id"]: row for row in stops_df.to_dict("records")}
+            for stop_row in stops_by_id.values():
                 stop_id = stop_row["stop_id"]
                 stop_name = stop_row["stop_name"]
                 stop_lat = stop_row.get("stop_lat")
@@ -452,13 +466,20 @@ class GtfsIngester(AbstractIngester):
                 root_parent_stop_id = None
                 parent_station_id = stop_row.get("parent_station")
                 if self.parent_station_id_exists(parent_station_id):
-                    parent_stop_row = stops_df.loc[stops_df["stop_id"] == parent_station_id]
+                    parent_stop_row = stops_by_id.get(parent_station_id)
+                    if parent_stop_row is None:
+                        raise ValueError(
+                            f"parent_station {parent_station_id!r} referenced by stop_id {stop_id!r} "
+                            f"not found in stops.txt"
+                        )
                     # we may have to go up one more level
-                    grandparent_station_id = parent_stop_row.iloc[0].get("parent_station")
+                    grandparent_station_id = parent_stop_row.get("parent_station")
                     if self.parent_station_id_exists(grandparent_station_id):
-                        parent_stop_row = stops_df.loc[stops_df["stop_id"] == grandparent_station_id]
+                        parent_stop_row = stops_by_id.get(grandparent_station_id)
+                        if parent_stop_row is None:
+                            raise ValueError(f"parent_station {grandparent_station_id!r} not found in stops.txt")
                         # Make sure we are at the top-level parent
-                        great_grandparent_station_id = parent_stop_row.iloc[0].get("parent_station")
+                        great_grandparent_station_id = parent_stop_row.get("parent_station")
                         if self.parent_station_id_exists(great_grandparent_station_id):
                             raise ValueError(
                                 f"More than two levels of parent_station found for stop_id {stop_id}. "
@@ -466,7 +487,7 @@ class GtfsIngester(AbstractIngester):
                             )
 
                     # We now have the root parent. Check if it already exists in stations_dict
-                    root_parent_stop_id = parent_stop_row.iloc[0]["stop_id"]
+                    root_parent_stop_id = parent_stop_row["stop_id"]
                     if root_parent_stop_id in stations_dict:
                         station_from_gtfs = stations_dict[root_parent_stop_id]
                         # if the station already exists, we can continue here and not create a new one
@@ -474,9 +495,9 @@ class GtfsIngester(AbstractIngester):
                         continue
                     else:
                         # Create new Station for the parent
-                        stop_name = parent_stop_row.iloc[0]["stop_name"]
-                        stop_lat = parent_stop_row.iloc[0].get("stop_lat")
-                        stop_lon = parent_stop_row.iloc[0].get("stop_lon")
+                        stop_name = parent_stop_row["stop_name"]
+                        stop_lat = parent_stop_row.get("stop_lat")
+                        stop_lon = parent_stop_row.get("stop_lon")
                         stop_short_name = root_parent_stop_id
                 else:
                     stop_short_name = stop_id
@@ -518,7 +539,7 @@ class GtfsIngester(AbstractIngester):
             lines_by_short_name: Dict[str, Line] = {}
             self.logger.info("Creating Line objects from GTFS routes")
             routes_df = feed.routes
-            for idx, route_row in routes_df.iterrows():
+            for idx, route_row in enumerate(routes_df.to_dict("records")):
                 route_id = route_row["route_id"]
                 if route_id is None or pd.isna(route_id):
                     raise ValueError(
@@ -575,7 +596,7 @@ class GtfsIngester(AbstractIngester):
 
             # Build trip endpoints using pre-sorted stop_times
             trip_endpoints = []
-            for idx, trip_row in trips_df.iterrows():
+            for trip_row in trips_df.to_dict("records"):
                 trip_id = trip_row["trip_id"]
                 trip_stops_sorted = stop_times_by_trip.get(trip_id)
 
@@ -605,7 +626,7 @@ class GtfsIngester(AbstractIngester):
             trip_endpoints_df = pd.DataFrame(trip_endpoints)
 
             # Create a dictionary for fast trip endpoint lookups
-            trip_endpoints_dict = {row["trip_id"]: row for _, row in trip_endpoints_df.iterrows()}
+            trip_endpoints_dict = {row["trip_id"]: row for row in trip_endpoints}
 
             # Create unique routes based on (route_id, direction_id, first_stop, last_stop)
             unique_routes = (
@@ -614,7 +635,7 @@ class GtfsIngester(AbstractIngester):
                 .reset_index()
             )
 
-            for idx, route_row in unique_routes.iterrows():
+            for route_row in unique_routes.to_dict("records"):
                 gtfs_route_id = route_row["route_id"]
                 direction_id = route_row["direction_id"]
                 first_stop_id = route_row["first_stop"]
@@ -738,40 +759,36 @@ class GtfsIngester(AbstractIngester):
             if progress_callback:
                 progress_callback(current_progress)
 
-            # Step 5: Create Rotation objects (group trips by block_id or service_id)
-            # If block_id exists, use it; otherwise use service_id
+            # Step 5: Create Rotation objects.
+            # If the feed has real block_id values, group trips by (service_id, block_id)
+            # to preserve block semantics (one rotation per vehicle-day). Otherwise
+            # block information is absent or meaningless and we fall back to per-trip
+            # dummy rotations created in Step 6 — which is also much cheaper, since it
+            # avoids piling thousands of trips onto the same rotation collection.
             self.logger.info("Creating Rotation objects")
-            rotation_groups = (
-                trips_df.groupby(["service_id", "block_id"])
-                if "block_id" in trips_df.columns
-                else trips_df.groupby("service_id")
-            )
+            has_real_block_id = "block_id" in trips_df.columns and trips_df["block_id"].notna().any()
 
-            # These are "template" rotations that will hold trips; specific rotations per day may be created later
-            # So we will need to remember to delete these if they end up unused
+            # Template rotations hold no trips themselves; per-day copies are created
+            # in Step 6 and the empty templates are deleted at the end.
             template_rotations_delete_later: List[Rotation] = []
 
-            for group_key, group_trips in rotation_groups:
-                if isinstance(group_key, tuple):
-                    service_id, block_id = group_key
-                    rotation_key: str = f"{service_id}_{block_id}" if pd.notna(block_id) else f"{service_id}_default"
-                else:
-                    service_id = group_key
-                    rotation_key = f"{service_id}_default"
+            if has_real_block_id:
+                block_trips_df = trips_df.dropna(subset=["block_id"])
+                for (service_id, block_id), _group in block_trips_df.groupby(["service_id", "block_id"]):
+                    rotation_key = f"{service_id}_{block_id}"
+                    rotation_from_gtfs = Rotation(
+                        name=rotation_key,
+                        vehicle_type=default_vehicle_type,
+                        allow_opportunity_charging=False,
+                        scenario=scenario,
+                    )
+                    rotations_dict[rotation_key] = rotation_from_gtfs
+                    template_rotations_delete_later.append(rotation_from_gtfs)
+                    session.add(rotation_from_gtfs)
+                    if always_flush:
+                        session.flush()
 
-                rotation_from_gtfs = Rotation(
-                    name=rotation_key,
-                    vehicle_type=default_vehicle_type,
-                    allow_opportunity_charging=False,
-                    scenario=scenario,
-                )
-                rotations_dict[rotation_key] = rotation_from_gtfs
-                template_rotations_delete_later.append(rotation_from_gtfs)
-                session.add(rotation_from_gtfs)
-                if always_flush:
-                    session.flush()
-
-            self.logger.info(f"Created {len(rotations_dict)} rotations")
+            self.logger.info(f"Created {len(rotations_dict)} rotation templates")
             current_progress += PROGRESS_ROTATIONS
             if progress_callback:
                 progress_callback(current_progress)
@@ -783,7 +800,7 @@ class GtfsIngester(AbstractIngester):
 
             # Create a dict mapping trip_id to list of dates it runs on
             trip_dates_dict: Dict[str, List[str]] = {}
-            for _, row in trip_activity_df.iterrows():
+            for row in trip_activity_df.to_dict("records"):
                 trip_id = row["trip_id"]
                 active_dates = [date for date in dates_to_import if row[date] == 1]
                 if active_dates:  # Only include trips that run on at least one date
@@ -794,11 +811,21 @@ class GtfsIngester(AbstractIngester):
             if progress_callback:
                 progress_callback(current_progress)
 
+            # Pre-compute the per-service-day "noon UTC minus 12h" anchor used by
+            # parse_gtfs_time. The anchor depends only on (date, tz), so a ~40-entry
+            # dict replaces ~1.7 M astimezone() + timedelta() recomputations on the
+            # stop-times hot path for the Izmir-scale feed.
+            anchors_by_date: Dict[str, datetime] = {}
+            for d in dates_to_import:
+                d_obj = datetime.strptime(d, "%Y%m%d").date()
+                noon_local = datetime(d_obj.year, d_obj.month, d_obj.day, 12, tzinfo=tz)
+                anchors_by_date[d] = noon_local.astimezone(timezone.utc) - timedelta(hours=12)
+
             # Step 6: Create Trip objects (one instance per trip per date it runs)
             self.logger.info("Creating Trip objects")
             trips_start_progress = current_progress
             total_trips = len(trips_df)
-            for trip_idx, (idx, trip_row) in enumerate(trips_df.iterrows()):
+            for trip_idx, trip_row in enumerate(trips_df.to_dict("records")):
                 trip_id = trip_row["trip_id"]
 
                 # Skip trips that don't run on any of our selected dates
@@ -840,53 +867,51 @@ class GtfsIngester(AbstractIngester):
 
                 # Create one trip instance for each date this trip runs
                 for date_str in trip_dates_dict[trip_id]:
-                    rotation_key_without_day: str = (
-                        f"{service_id}_{block_id}" if pd.notna(block_id) else f"{service_id}_default"
-                    )
-                    rotation_key_with_day = rotation_key_without_day + f"_{date_str}"
-                    # See if the specific rotation for this day exists
-                    rotation = rotations_dict.get(rotation_key_with_day)
-
-                    if rotation is None:
-                        # Check if the general rotation exists
-                        rotation = rotations_dict.get(rotation_key_without_day)
-
+                    # Two cases:
+                    #   1. Feed has real block_ids and this trip has one: look up (or
+                    #      create) the day-specific copy of the (service_id, block_id)
+                    #      template, shared by all trips in the same block on this day.
+                    #   2. Otherwise: give this trip instance its own one-trip dummy
+                    #      rotation, never shared. Avoids O(N²) cascades from piling
+                    #      thousands of trips onto one collection.
+                    if has_real_block_id and pd.notna(block_id):
+                        rotation_key_without_day = f"{service_id}_{block_id}"
+                        rotation_key_with_day = f"{rotation_key_without_day}_{date_str}"
+                        rotation = rotations_dict.get(rotation_key_with_day)
                         if rotation is None:
-                            # We will need to create a new template rotation containing just this one trip
+                            template = rotations_dict[rotation_key_without_day]
                             rotation = Rotation(
-                                name=f"TEMPLATE DUMMY Single-Trip Rotation for {trip_id}",
-                                vehicle_type=default_vehicle_type,
-                                allow_opportunity_charging=False,
-                                scenario=scenario,
-                            )
-                            rotations_dict[uuid4().hex] = rotation  # Store with a unique key
-                        else:
-                            # We will create a copy of the existing rotation for this specific day
-                            rotation = Rotation(
-                                name=f"{rotation.name} for {date_str}",
-                                vehicle_type=rotation.vehicle_type,
-                                allow_opportunity_charging=rotation.allow_opportunity_charging,
+                                name=f"{template.name} for {date_str}",
+                                vehicle_type=template.vehicle_type,
+                                allow_opportunity_charging=template.allow_opportunity_charging,
                                 scenario=scenario,
                             )
                             rotations_dict[rotation_key_with_day] = rotation
+                            session.add(rotation)
+                            if always_flush:
+                                session.flush()
+                    else:
+                        rotation = Rotation(
+                            name=f"GTFS dummy rotation for trip {trip_id} on {date_str}",
+                            vehicle_type=default_vehicle_type,
+                            allow_opportunity_charging=False,
+                            scenario=scenario,
+                        )
                         session.add(rotation)
                         if always_flush:
                             session.flush()
 
-                    # Parse the GTFS date string (YYYYMMDD) to get the actual date
-                    date_obj = datetime.strptime(date_str, "%Y%m%d").date()
-                    # Create base datetime for this specific date
-                    base_date = datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=tz)
+                    anchor_utc = anchors_by_date[date_str]
 
-                    departure_time = self.parse_gtfs_time(first_arrival_str, base_date)
+                    departure_time = self._parse_gtfs_time_with_anchor(first_arrival_str, anchor_utc, tz)
 
                     # For arrival time, use the departure time from the last stop if available
                     if pd.notna(last_departure_str) and last_departure_str:
-                        arrival_time = self.parse_gtfs_time(last_departure_str, base_date)
+                        arrival_time = self._parse_gtfs_time_with_anchor(last_departure_str, anchor_utc, tz)
                     else:
                         # Use arrival time of last stop
                         last_arrival_str = trip_stops.iloc[-1]["arrival_time"]
-                        arrival_time = self.parse_gtfs_time(last_arrival_str, base_date)
+                        arrival_time = self._parse_gtfs_time_with_anchor(last_arrival_str, anchor_utc, tz)
 
                     # Create a unique trip key that includes the date
                     trip_instance_key = f"{trip_id}_{date_str}"
@@ -900,11 +925,6 @@ class GtfsIngester(AbstractIngester):
                     )
                     trips_dict[trip_instance_key] = trip_from_gtfs
                     session.add(trip_from_gtfs)
-
-                    # Make sure the rotation's trips are sorted by departure time
-                    trip_from_gtfs.rotation.trips = sorted(
-                        trip_from_gtfs.rotation.trips, key=lambda t: t.departure_time
-                    )
 
                     if always_flush:
                         session.flush()
@@ -922,12 +942,20 @@ class GtfsIngester(AbstractIngester):
             # Step 7: Create StopTime objects (for each trip instance on each date)
             self.logger.info("Creating StopTime objects")
             stop_times_start_progress = current_progress
-            for trip_idx, (idx, trip_row) in enumerate(trips_df.iterrows()):
+            for trip_idx, trip_row in enumerate(trips_df.to_dict("records")):
                 trip_id = trip_row["trip_id"]
 
                 # Skip trips that don't run on any of our selected dates
                 if trip_id not in trip_dates_dict:
                     continue
+
+                trip_stop_times_df = stop_times_by_trip.get(trip_id)
+                if trip_stop_times_df is None:
+                    raise ValueError(f"No stop times found for trip {trip_id}")
+                # Convert to list-of-dicts once per trip; the inner loop iterates this
+                # list once per (trip, date) and avoids pandas-Series construction that
+                # dominates DataFrame.iterrows.
+                trip_stop_times_records = trip_stop_times_df.to_dict("records")
 
                 for date_str in trip_dates_dict[trip_id]:
                     trip_instance_key = f"{trip_id}_{date_str}"
@@ -936,23 +964,10 @@ class GtfsIngester(AbstractIngester):
                     if trip is None:
                         raise ValueError(f"Trip instance not found for key {trip_instance_key}")
 
-                    # Parse the GTFS date string (YYYYMMDD) to get the actual date
-                    date_obj = datetime.strptime(date_str, "%Y%m%d").date()
-                    # Create base datetime for this specific date
-                    base_date = datetime(date_obj.year, date_obj.month, date_obj.day, tzinfo=tz)
+                    anchor_utc = anchors_by_date[date_str]
 
                     stop_times_to_add = []
-                    trip_stop_times = stop_times_by_trip.get(trip_id)
-                    if trip_stop_times is None:
-                        raise ValueError(f"No stop times found for trip {trip_id}")
-
-                    for idx, stop_time_row in trip_stop_times.iterrows():
-                        trip_id = stop_time_row["trip_id"]
-
-                        # Skip trips that don't run on any of our selected dates
-                        if trip_id not in trip_dates_dict:
-                            raise ValueError(f"Trip {trip_id} not found in active trips for stop times")
-
+                    for stop_time_row in trip_stop_times_records:
                         stop_id = stop_time_row["stop_id"]
                         arrival_time_str = stop_time_row["arrival_time"]
                         departure_time_str = stop_time_row.get("departure_time", arrival_time_str)
@@ -961,11 +976,11 @@ class GtfsIngester(AbstractIngester):
                         if station is None:
                             raise ValueError(f"Station not found for stop_id {stop_id} in trip {trip_id}")
 
-                        arrival_time = self.parse_gtfs_time(arrival_time_str, base_date)
+                        arrival_time = self._parse_gtfs_time_with_anchor(arrival_time_str, anchor_utc, tz)
 
                         # Calculate dwell duration
                         if pd.notna(departure_time_str) and departure_time_str:
-                            departure_time = self.parse_gtfs_time(departure_time_str, base_date)
+                            departure_time = self._parse_gtfs_time_with_anchor(departure_time_str, anchor_utc, tz)
                             dwell_duration = departure_time - arrival_time
                         else:
                             dwell_duration = timedelta(seconds=0)
