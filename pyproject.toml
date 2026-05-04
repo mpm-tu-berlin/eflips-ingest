@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "eflips-ingest"
-version = "1.6.1"
+version = "1.6.2"
 description = "A collection of import scripts for converting bus schedule data into the [eflips-model](https://github.com/mpm-tu-berlin/eflips-model) data format."
 authors = [
     "Ludger Heide <ludger.heide@lhtechnologies.de>"
@@ -14,7 +14,7 @@ include = ["LICENSE.md"]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.14"
-eflips-model = ">=9.1.0,<11.0.0"
+eflips-model = ">=9.1.0,<12.0.0"
 requests = "^2.31.0"
 fire = "^0.7.0"
 lxml = "^5.1.0"
@@ -22,6 +22,8 @@ pyproj = "^3.6.1"
 pytz = "^2024.1"
 xsdata = {extras = ["cli", "lxml"], version = "^24.1"}
 gtfs-kit = "^12.0.0"
+platformdirs = "^4.9.6"
+kv-cache = "^0.3.4"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.7.1"

@@ -3,14 +3,22 @@ import logging
 import os
 from functools import lru_cache
 from numbers import Number
+from pathlib import Path
 from tempfile import gettempdir
 from typing import Tuple
 
 import geoalchemy2
+import platformdirs
 import requests
 from pyproj import Transformer
 from eflips.model import AssocRouteStation, Route, Station
 import eflips.ingest
+from kv_cache import KVStore  # type: ignore[import-untyped]
+
+# The KV Store is module-level, so that it is only initialized once and can be used across all functions in this module
+cache_dir = Path(platformdirs.user_cache_dir("eflips", "de.tu-berlin", "1"))
+cache_file = cache_dir / Path("eflips_ingest_altitude_cache.db")
+store = KVStore(str(cache_file.absolute()))
 
 """
 Some utility functions for the ingest module.
@@ -20,8 +28,7 @@ Some utility functions for the ingest module.
 transformer = Transformer.from_crs("EPSG:3068", "EPSG:4326")
 
 
-@lru_cache(maxsize=4096)
-def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> float:
+def get_altitude_openelevation(latlon: Tuple[float, float]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
@@ -38,32 +45,19 @@ def get_altitude_openelevation(latlon: Tuple[Number, Number]) -> float:
     data = response.json()
     if "elevation" in data["results"][0]:
         assert isinstance(data["results"][0]["elevation"], float) or isinstance(data["results"][0]["elevation"], int)
-        return data["results"][0]["elevation"]
+        result = data["results"][0]["elevation"]
+        # 0 (which is bad, because it can actually exist) and < -9000 are sentinel values for "no elevation found"
+        if result == 0 or result < -9000:
+            raise ValueError("No elevation found")
+        return result
     else:
         raise ValueError("No elevation found")
 
 
-# Since this is paid API we at least try to cache the results
 def get_altitude_google(latlon: Tuple[float, float]) -> float:
     """
     Get altitude infomration for a given latitude and longitude
     """
-    # Try loading the result from a cache file
-    cache_dir = os.path.join(gettempdir(), "eflips_cache")
-    # Create folders by lat, lon
-    this_coord_dir = os.path.join(cache_dir, f"{int(latlon[0]*100)},{int(latlon[1]*100)}")
-    os.makedirs(this_coord_dir, exist_ok=True)
-    this_coord_file = os.path.join(this_coord_dir, f"{latlon}.json")
-    if os.path.exists(this_coord_file):
-        with open(this_coord_file, "r") as f:
-            try:
-                loaded = json.load(f)
-                assert isinstance(loaded, float) or isinstance(loaded, int)
-                return float(loaded)
-            except json.JSONDecodeError:
-                logging.error(f"Failed to load cache file {this_coord_file}")
-                os.remove(this_coord_file)
-
     if not os.getenv("GOOGLE_MAPS_API_KEY"):
         raise ValueError("GOOGLE_MAPS_API_KEY not set")
 
@@ -78,26 +72,36 @@ def get_altitude_google(latlon: Tuple[float, float]) -> float:
 
     altitude = data["results"][0]["elevation"]
 
-    # Save the result to a cache file
-    os.makedirs(this_coord_dir, exist_ok=True)
-    with open(this_coord_file, "w") as f:
-        json.dump(altitude, f)
-
     return altitude
 
 
 def get_altitude(latlon: Tuple[float, float]) -> float:
     """
-    Get altitude infomration for a given latitude and longitude
+    Get altitude information for a given latitude and longitude
     """
     if "ELEVATION_DUMMY_MODE" in os.environ:
         if os.environ["ELEVATION_DUMMY_MODE"] == "True":
             return 9999.0
 
-    try:
-        return get_altitude_openelevation(latlon)
-    except ValueError:
-        return get_altitude_google(latlon)
+    # We see whether a cache exist for the coordinate (rounded to the nearest 4 digits ~= 11m)
+    # If it exists, we load it and return it.
+    # Try loading the result from a cache file
+
+    rounded_lat = round(latlon[0], 4)
+    rounded_lon = round(latlon[1], 4)
+    cache_key = f"{rounded_lat},{rounded_lon}"
+    result_or_none = store.get(cache_key, default=None)
+    if isinstance(result_or_none, float) or isinstance(result_or_none, int):
+        altitude = result_or_none
+    elif result_or_none is None:
+        try:
+            altitude = get_altitude_openelevation(latlon)
+        except ValueError:
+            altitude = get_altitude_google(latlon)
+        store.set(cache_key, altitude)
+    else:
+        raise ValueError(f"Invalid cache value for key {cache_key}: {result_or_none}")
+    return altitude
 
 
 def soldner_to_pointz(x: float, y: float) -> str:
