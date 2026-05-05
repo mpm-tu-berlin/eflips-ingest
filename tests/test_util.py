@@ -7,6 +7,7 @@ from eflips.ingest.util import (
     get_altitude_openelevation,
     soldner_to_pointz,
     geometry_has_z,
+    get_altitude,
 )
 from tests.conftest import mock_get_altitude
 
@@ -17,8 +18,8 @@ class TestAltitudeLookups:
         reason="OPENELEVATION_URL not set",
     )
     def test_altitude_openelevation(self):
-        coords = [(52.5552562, 13.3294346), (52.48458526, 13.41229386)]
-        altitudes = [52.0, 67.0]
+        coords = [(52.5552562, 13.3294346), (52.48458526, 13.41229386), (48.439516236539895, 9.960301010923274)]
+        altitudes = [52.0, 67.0, 587.0]
         for i in range(len(coords)):
             assert get_altitude_openelevation(coords[i]) == altitudes[i]
 
@@ -36,10 +37,20 @@ class TestAltitudeLookups:
         reason="GOOGLE_MAPS_API_KEY not set",
     )
     def test_altitude_google(self):
-        coords = [(52.5552562, 13.3294346), (52.48458526, 13.41229386)]
-        altitudes = [52.22081756591797, 68.6605224609375]
+        coords = [(52.5552562, 13.3294346), (52.48458526, 13.41229386), (48.439516236539895, 9.960301010923274)]
+        altitudes = [52.22081756591797, 68.6605224609375, 587.0271606445312]
         for i in range(len(coords)):
             assert get_altitude_google(coords[i]) == altitudes[i]
+
+    @pytest.mark.skipif(
+        not os.getenv("GOOGLE_MAPS_API_KEY") or not os.getenv("OPENELEVATION_URL"),
+        reason="GOOGLE_MAPS_API_KEY or OPENELEVATION_URL not set",
+    )
+    def test_altitude(self):
+        coords = [(52.5552562, 13.3294346), (52.48458526, 13.41229386), (48.439516236539895, 9.960301010923274)]
+        altitudes = [52.22081756591797, 67, 587]
+        for i in range(len(coords)):
+            assert get_altitude(coords[i]) == round(altitudes[i])
 
 
 class TestGeography:
