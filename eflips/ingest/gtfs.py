@@ -1,4 +1,6 @@
+import bisect
 import logging
+import math
 import os
 import pathlib as pl
 import pickle
@@ -30,14 +32,18 @@ from eflips.model import (
     Base,
 )
 from eflips.model import create_engine
-from geoalchemy2.shape import from_shape
+from geoalchemy2.shape import from_shape, to_shape
 from gtfs_kit import Feed
+from pyproj import Geod
 from shapely import LineString  # type: ignore [import-untyped]
 from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.util import get_altitude, geometry_has_z
+
+# Single shared geodesic helper. WGS84 matches the GTFS coordinate system.
+_GEOD = Geod(ellps="WGS84")
 
 
 class GtfsIngester(AbstractIngester):
@@ -594,6 +600,11 @@ class GtfsIngester(AbstractIngester):
             # Build route geometries from GTFS shapes if available
             route_geometries = self.build_route_geometries(feed)
 
+            # Per-route_key shapely LineString, used later when computing
+            # AssocRouteStation.elapsed_distance via point-on-line projection
+            # for feeds that lack stop_times.shape_dist_traveled.
+            shape_geom_by_route_key: Dict[str, LineString] = {}
+
             # Build trip endpoints using pre-sorted stop_times
             trip_endpoints = []
             for trip_row in trips_df.to_dict("records"):
@@ -705,6 +716,8 @@ class GtfsIngester(AbstractIngester):
                     scenario=scenario,
                 )
                 routes_dict[route_key] = route
+                if shapely_geom is not None:
+                    shape_geom_by_route_key[route_key] = shapely_geom
                 session.add(route)
                 if always_flush:
                     session.flush()
@@ -1033,36 +1046,25 @@ class GtfsIngester(AbstractIngester):
                 # Sort stop times by arrival time
                 sorted_stop_times = sorted(sample_trip.stop_times, key=lambda st: st.arrival_time)
 
-                # Calculate elapsed distances
-                # If we have shape_dist_traveled, use that; otherwise, distribute evenly
-                # Get the GTFS trip_id for the sample trip
+                # Recover the GTFS trip_id from the per-day instance key
+                # ({trip_id}_{YYYYMMDD}); needed to look up the raw stop_times
+                # rows that may carry shape_dist_traveled.
                 trip_id_gtfs = [k for k, v in trips_dict.items() if v == sample_trip][0]
-
-                # Remove the date part to get the original trip_id
                 trip_id_gtfs = trip_id_gtfs[:-9]
 
                 stop_times_for_trip = stop_times_by_trip.get(trip_id_gtfs)
+                shape_geom_for_route = shape_geom_by_route_key.get(route_key)
+
+                elapsed_distances = self._compute_elapsed_distances(
+                    sorted_stop_times=sorted_stop_times,
+                    stop_times_for_trip=stop_times_for_trip,
+                    shape_geom=shape_geom_for_route,
+                    route=route,
+                )
 
                 # We cannot add them one by one because we would be (temporarily) violating distance ordering
                 assocs_to_add = []
-                for i, stop_time in enumerate(sorted_stop_times):
-                    elapsed_distance = None
-
-                    # Try to get shape_dist_traveled from the original data
-                    if stop_times_for_trip is not None and "shape_dist_traveled" in stop_times_for_trip.columns:
-                        # Find the matching stop in the dataframe by stop_id
-                        stop_id_to_find = stop_time.station.name_short  # We stored the stop_id in name_short
-                        matching_stops = stop_times_for_trip[stop_times_for_trip["stop_id"] == stop_id_to_find]
-
-                        if len(matching_stops) > 0:
-                            stop_row = matching_stops.iloc[0]
-                            if pd.notna(stop_row["shape_dist_traveled"]):
-                                elapsed_distance = float(stop_row["shape_dist_traveled"])
-
-                    # If we didn't get a distance from shape_dist_traveled, distribute evenly
-                    if elapsed_distance is None:
-                        elapsed_distance = (i / max(len(sorted_stop_times) - 1, 1)) * route.distance
-
+                for stop_time, elapsed_distance in zip(sorted_stop_times, elapsed_distances):
                     assoc_route_station = AssocRouteStation(
                         route=route, station=stop_time.station, elapsed_distance=elapsed_distance, scenario=scenario
                     )
@@ -1450,6 +1452,210 @@ class GtfsIngester(AbstractIngester):
         except Exception as e:
             self.logger.error(f"Failed to build route geometries: {e}")
             raise e  # Potentially, there are some special types of exceptions we may want to swallow
+
+    def _compute_elapsed_distances(
+        self,
+        sorted_stop_times: List[StopTime],
+        stop_times_for_trip: pd.DataFrame | None,
+        shape_geom: LineString | None,
+        route: Route,
+    ) -> List[float]:
+        """
+        Compute the cumulative ``elapsed_distance`` (meters) for each stop in
+        ``sorted_stop_times``, in order.
+
+        Strategies, tried in order; the first that produces a usable result
+        wins:
+
+        1. ``shape_dist_traveled`` from ``stop_times.txt``, matched
+           positionally (the StopTime objects were created in stop_sequence
+           order from the same DataFrame, so index ``i`` of
+           ``sorted_stop_times`` corresponds to row ``i`` of
+           ``stop_times_for_trip``). Required because using
+           ``station.name_short`` as the match key fails whenever GTFS stops
+           have a ``parent_station`` (the parent's id is in the station, the
+           child's id is in stop_times.txt).
+        2. Project each station onto the route shape geometry and convert
+           the arc length to ellipsoidal meters via :class:`pyproj.Geod`.
+        3. Cumulative ellipsoidal distance between consecutive station
+           coordinates, rescaled so the last stop sits exactly at
+           ``route.distance``.
+        4. Uniform distribution as a last resort. Logs a WARNING because
+           the resulting elapsed_distance values are not faithful to the
+           real geography.
+        """
+        n = len(sorted_stop_times)
+        if n == 0:
+            return []
+        if n == 1:
+            return [0.0]
+
+        # Strategy 1: positional shape_dist_traveled lookup.
+        if (
+            stop_times_for_trip is not None
+            and "shape_dist_traveled" in stop_times_for_trip.columns
+            and len(stop_times_for_trip) == n
+        ):
+            sd_col = stop_times_for_trip["shape_dist_traveled"]
+            if sd_col.notna().all():
+                distances = [float(sd_col.iloc[i]) for i in range(n)]
+                if all(distances[i] >= distances[i - 1] for i in range(1, n)):
+                    return distances
+
+        # Strategy 2: project stations onto the route shape geometry.
+        if shape_geom is not None and all(st.station.geom is not None for st in sorted_stop_times):
+            try:
+                projected = self._project_stops_onto_shape(sorted_stop_times, shape_geom, route.distance)
+            except Exception as e:
+                self.logger.warning(
+                    f"Shape-projection elapsed_distance failed for route {route.name}: {e}; "
+                    f"falling back to inter-stop geodetic distances"
+                )
+                projected = None
+            if projected is not None:
+                return projected
+
+        # Strategy 3: cumulative ellipsoidal distance between consecutive stations.
+        if all(st.station.geom is not None for st in sorted_stop_times):
+            try:
+                cumulative = self._cumulative_haversine_distances(sorted_stop_times, route.distance)
+            except Exception as e:
+                self.logger.warning(
+                    f"Inter-stop geodetic elapsed_distance failed for route {route.name}: {e}; "
+                    f"falling back to uniform distribution"
+                )
+                cumulative = None
+            if cumulative is not None:
+                return cumulative
+
+        # Strategy 4: uniform fallback (poor proxy for real geometry).
+        self.logger.warning(
+            f"Falling back to uniform elapsed_distance for route {route.name} "
+            f"({n} stops, {route.distance:.0f} m): no shape_dist_traveled, no shape geometry, "
+            f"and at least one station lacks coordinates."
+        )
+        return [(i / (n - 1)) * route.distance for i in range(n)]
+
+    @staticmethod
+    def _project_stops_onto_shape(
+        sorted_stop_times: List[StopTime],
+        shape_geom: LineString,
+        target_total_distance: float,
+    ) -> List[float] | None:
+        """
+        Project each stop's coordinates onto the shape's polyline and return
+        the cumulative geodetic distance (in meters) of each projection.
+
+        The shape is built in WGS84, so :meth:`shapely.LineString.project`
+        returns arc length in degrees. We map that to ellipsoidal meters by
+        precomputing two cumulative-length arrays along the polyline (one in
+        degrees, one in meters via :class:`pyproj.Geod`) and interpolating.
+
+        The result is rescaled so the last stop sits at
+        ``target_total_distance``, matching the contract that the last
+        station's elapsed_distance equals ``route.distance``.
+
+        Returns ``None`` if the shape is degenerate (fewer than two distinct
+        vertices) or if any stop lacks geometry.
+        """
+        # Use 2D coordinates for projection; Z would distort planar projection.
+        coords_2d: List[Tuple[float, float]] = [(float(c[0]), float(c[1])) for c in shape_geom.coords]
+        if len(coords_2d) < 2:
+            return None
+        shape_2d = LineString(coords_2d)
+
+        # Cumulative degree-arc along the polyline; matches LineString.project units.
+        deg_cum: List[float] = [0.0]
+        for i in range(1, len(coords_2d)):
+            x1, y1 = coords_2d[i - 1]
+            x2, y2 = coords_2d[i]
+            deg_cum.append(deg_cum[-1] + math.hypot(x2 - x1, y2 - y1))
+
+        # Cumulative ellipsoidal distance in meters along the same polyline.
+        geo_cum: List[float] = [0.0]
+        for i in range(1, len(coords_2d)):
+            x1, y1 = coords_2d[i - 1]
+            x2, y2 = coords_2d[i]
+            _az1, _az2, dist = _GEOD.inv(x1, y1, x2, y2)
+            geo_cum.append(geo_cum[-1] + dist)
+
+        if deg_cum[-1] <= 0.0 or geo_cum[-1] <= 0.0:
+            return None
+
+        distances: List[float] = []
+        for st in sorted_stop_times:
+            if st.station.geom is None:
+                return None
+            pt = to_shape(st.station.geom)  # type: ignore[arg-type]
+            pt_2d = Point(float(pt.x), float(pt.y))
+            proj_deg = float(shape_2d.project(pt_2d))
+            if proj_deg <= 0.0:
+                distances.append(0.0)
+                continue
+            if proj_deg >= deg_cum[-1]:
+                distances.append(geo_cum[-1])
+                continue
+            # Find the polyline segment where the projection lands.
+            idx = bisect.bisect_right(deg_cum, proj_deg)
+            if idx <= 0:
+                idx = 1
+            elif idx >= len(deg_cum):
+                idx = len(deg_cum) - 1
+            seg_deg = deg_cum[idx] - deg_cum[idx - 1]
+            if seg_deg <= 0.0:
+                distances.append(geo_cum[idx - 1])
+                continue
+            frac = (proj_deg - deg_cum[idx - 1]) / seg_deg
+            seg_geo = geo_cum[idx] - geo_cum[idx - 1]
+            distances.append(geo_cum[idx - 1] + frac * seg_geo)
+
+        # Loops or back-tracking shapes can produce non-monotonic projections;
+        # AssocRouteStation requires monotonic non-decreasing elapsed_distance.
+        for i in range(1, len(distances)):
+            if distances[i] < distances[i - 1]:
+                distances[i] = distances[i - 1]
+
+        # Rescale to match route.distance exactly (PostGIS Geography vs pyproj.Geod
+        # differ by ~1e-7; this also pins the last stop to route.distance for
+        # datasets where stops aren't perfectly on the shape vertices).
+        if distances[-1] > 0.0 and target_total_distance > 0.0:
+            scale = target_total_distance / distances[-1]
+            distances = [d * scale for d in distances]
+
+        return distances
+
+    @staticmethod
+    def _cumulative_haversine_distances(
+        sorted_stop_times: List[StopTime],
+        target_total_distance: float,
+    ) -> List[float] | None:
+        """
+        Cumulative ellipsoidal distance (meters) between consecutive station
+        coordinates, rescaled so the last stop equals ``target_total_distance``.
+
+        Returns ``None`` if any station lacks geometry or the points all
+        coincide.
+        """
+        cum: List[float] = [0.0]
+        prev_lon: float | None = None
+        prev_lat: float | None = None
+        for st in sorted_stop_times:
+            if st.station.geom is None:
+                return None
+            pt = to_shape(st.station.geom)  # type: ignore[arg-type]
+            if prev_lon is not None and prev_lat is not None:
+                _az1, _az2, dist = _GEOD.inv(prev_lon, prev_lat, float(pt.x), float(pt.y))
+                cum.append(cum[-1] + dist)
+            prev_lon, prev_lat = float(pt.x), float(pt.y)
+
+        if cum[-1] <= 0.0:
+            return None
+
+        if target_total_distance > 0.0:
+            scale = target_total_distance / cum[-1]
+            cum = [d * scale for d in cum]
+
+        return cum
 
     def _preprocess_stop_times_by_trip(self, stop_times_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         """

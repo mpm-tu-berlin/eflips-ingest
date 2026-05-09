@@ -558,6 +558,64 @@ class TestGtfsIngester(BaseIngester):
         assert coerce(["a", "", "b"]) == ["a", "b"]
         assert coerce(("a", None, "b")) == ["a", "b"]
 
+    # ====================
+    # AssocRouteStation.elapsed_distance Tests
+    # ====================
+
+    def test_elapsed_distance_is_not_uniform_swu(self, ingester, swu_feed) -> None:
+        """Regression test for the uniform-elapsed-distance bug.
+
+        Before the fix, every route in the SWU feed produced perfectly equal
+        inter-stop spacing because (a) SWU's stops use ``parent_station``,
+        which broke the per-stop ``shape_dist_traveled`` lookup, and (b) the
+        fallback distributed distance evenly with no warning. This test
+        ingests SWU and asserts that at least one multi-stop route has
+        meaningful variance in its inter-stop distances.
+        """
+        from sqlalchemy.orm import Session
+        from eflips.model import AssocRouteStation, Route, create_engine
+
+        feed = gk.read_feed(swu_feed, dist_units="m")
+        validity = ingester.get_feed_validity_period(feed)
+        start_date = datetime.strptime(validity[0], "%Y%m%d").date()
+        start_date += timedelta(days=7)
+
+        success, uuid = ingester.prepare(
+            progress_callback=None,
+            gtfs_zip_file=swu_feed,
+            start_date=start_date.isoformat(),
+            duration="DAY",
+        )
+        assert success
+        assert isinstance(uuid, UUID)
+        ingester.ingest(uuid)
+
+        engine = create_engine(self.database_url)
+        non_uniform_routes = 0
+        with Session(engine) as session:
+            routes = session.query(Route).all()
+            assert len(routes) > 0, "expected at least one route"
+            for route in routes:
+                assocs = (
+                    session.query(AssocRouteStation)
+                    .filter(AssocRouteStation.route == route)
+                    .order_by(AssocRouteStation.elapsed_distance)
+                    .all()
+                )
+                if len(assocs) < 3:
+                    continue
+                segments = [assocs[i].elapsed_distance - assocs[i - 1].elapsed_distance for i in range(1, len(assocs))]
+                # Uniform distribution → all segments identical (variance == 0).
+                spread = max(segments) - min(segments)
+                if spread > 1.0:
+                    non_uniform_routes += 1
+
+        assert non_uniform_routes > 0, (
+            "every SWU route had uniformly-spaced elapsed_distance values; the "
+            "shape_dist_traveled lookup is silently falling back to uniform "
+            "distribution again."
+        )
+
 
 class TestParseGtfsTime:
     """Unit tests for ``GtfsIngester.parse_gtfs_time``.
