@@ -1098,6 +1098,20 @@ class GtfsIngester(AbstractIngester):
                         self.logger.info(warn_string)
                     assocs_to_add[-1].elapsed_distance = route.distance
 
+                # Clamp any preceding values that drifted past the anchored endpoints. The
+                # eflips.model validator sorts assoc_route_stations by elapsed_distance and
+                # requires the resulting last entry to equal route.distance; without this
+                # clamp, an intermediate entry whose rescaled value sits ~1e-12 above
+                # route.distance (e.g. when two trailing stops both project to the end of
+                # the route shape, see _project_stops_onto_shape) becomes the sorted last
+                # and trips the validator.
+                for assoc in assocs_to_add[:-1]:
+                    if assoc.elapsed_distance > route.distance:
+                        assoc.elapsed_distance = route.distance
+                for assoc in assocs_to_add[1:]:
+                    if assoc.elapsed_distance < 0.0:
+                        assoc.elapsed_distance = 0.0
+
                 route.assoc_route_stations = assocs_to_add
                 session.add_all(assocs_to_add)
                 if always_flush:

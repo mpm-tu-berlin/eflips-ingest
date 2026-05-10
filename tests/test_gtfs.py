@@ -373,6 +373,39 @@ class TestGtfsIngester(BaseIngester):
         assert success
         assert isinstance(result, UUID)
 
+    def test_ingest_svf_full_week_no_validation_failure(self, ingester, vbb_feed) -> None:
+        """Regression test for the float-drift validator failure on the SVF VBB agency.
+
+        Agency 84 ("Stadtverkehrsgesellschaft mbH Frankfurt (Oder)") has at least one
+        bus route (980 → Frankfurt (Oder), Kopernikusstr.) where two trailing stops
+        project to the same end of the route's shape. Before the fix, the rescaling
+        in ``_project_stops_onto_shape`` left both with a value that was
+        ``route.distance + ~1e-12``; the main code then forced only the very last
+        ``AssocRouteStation.elapsed_distance = route.distance``, leaving the
+        second-to-last entry sorted *after* the anchored last entry and tripping the
+        ``check_route_before_insert_or_update`` validator at commit time. This test
+        ingests SVF with ``bus_only=True`` for a week to exercise that route and
+        asserts the commit completes without raising.
+        """
+        feed = gk.read_feed(vbb_feed, dist_units="m")
+        validity = ingester.get_feed_validity_period(feed)
+        start_date = datetime.strptime(validity[0], "%Y%m%d").date()
+        start_date += timedelta(days=7)
+        while start_date.weekday() != 0:
+            start_date += timedelta(days=1)
+
+        success, uuid = ingester.prepare(
+            progress_callback=None,
+            gtfs_zip_file=vbb_feed,
+            start_date=start_date.isoformat(),
+            duration="WEEK",
+            agency_id="84",
+            bus_only=True,
+        )
+        assert success
+        assert isinstance(uuid, UUID)
+        ingester.ingest(uuid)
+
     # ====================
     # Single-Agency Edge Cases
     # ====================
