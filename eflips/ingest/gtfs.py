@@ -1505,7 +1505,9 @@ class GtfsIngester(AbstractIngester):
         # Strategy 2: project stations onto the route shape geometry.
         if shape_geom is not None and all(st.station.geom is not None for st in sorted_stop_times):
             try:
-                projected = self._project_stops_onto_shape(sorted_stop_times, shape_geom, route.distance)
+                projected = self._project_stops_onto_shape(
+                    sorted_stop_times, shape_geom, route.distance, route_name=route.name
+                )
             except Exception as e:
                 self.logger.warning(
                     f"Shape-projection elapsed_distance failed for route {route.name}: {e}; "
@@ -1536,11 +1538,12 @@ class GtfsIngester(AbstractIngester):
         )
         return [(i / (n - 1)) * route.distance for i in range(n)]
 
-    @staticmethod
     def _project_stops_onto_shape(
+        self,
         sorted_stop_times: List[StopTime],
         shape_geom: LineString,
         target_total_distance: float,
+        route_name: str = "",
     ) -> List[float] | None:
         """
         Project each stop's coordinates onto the shape's polyline and return
@@ -1609,8 +1612,25 @@ class GtfsIngester(AbstractIngester):
             seg_geo = geo_cum[idx] - geo_cum[idx - 1]
             distances.append(geo_cum[idx - 1] + frac * seg_geo)
 
-        # Loops or back-tracking shapes can produce non-monotonic projections;
-        # AssocRouteStation requires monotonic non-decreasing elapsed_distance.
+        # Closed-loop shapes (where the trip's terminus stop sits at the loop's
+        # closure point) make ``shapely.LineString.project`` return 0 for the
+        # last stop -- the closest point on the line is the start vertex, which
+        # is also the end vertex. Snap such terminus stops to the end of the
+        # shape rather than to a body position, so downstream cumulative
+        # distances stay faithful to the trip's geography.
+        if len(distances) >= 2 and distances[-1] < distances[-2]:
+            self.logger.warning(
+                f"Closed-loop shape detected for route {route_name!r}: terminus stop "
+                f"projected backward (raw {distances[-1]:.1f} m < previous stop's "
+                f"{distances[-2]:.1f} m). Snapping it to the end of the shape "
+                f"({geo_cum[-1]:.1f} m). Consider inspecting the GTFS shape manually "
+                f"to confirm the loop closure is intended."
+            )
+            distances[-1] = geo_cum[-1]
+
+        # Loops or back-tracking shapes can still produce non-monotonic
+        # projections at intermediate stops; AssocRouteStation requires
+        # monotonic non-decreasing elapsed_distance.
         for i in range(1, len(distances)):
             if distances[i] < distances[i - 1]:
                 distances[i] = distances[i - 1]
