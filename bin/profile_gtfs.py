@@ -23,20 +23,11 @@ import pstats
 import sys
 import time
 from pathlib import Path
-from typing import Tuple
 from uuid import UUID
 
-# Patch out network altitude lookups before eflips.ingest is imported.
-import eflips.ingest.util as _util  # noqa: E402
-
-
-def _fake_altitude(latlon: Tuple[float, float]) -> float:
-    return 0.0
-
-
-_util.get_altitude = _fake_altitude  # type: ignore[assignment]
-_util.get_altitude_google = _fake_altitude  # type: ignore[assignment]
-_util.get_altitude_openelevation = _fake_altitude  # type: ignore[assignment]
+# Bypass network altitude lookups by enabling the dummy mode that
+# eflips.model.util.geometry.get_altitude honors via env var.
+os.environ.setdefault("ELEVATION_DUMMY_MODE", "True")
 
 from eflips.model import Base, create_engine, setup_database  # noqa: E402
 from pyinstrument import Profiler  # noqa: E402

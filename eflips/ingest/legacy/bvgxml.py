@@ -26,12 +26,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from xsdata.formats.dataclass.parsers import XmlParser
 
-import eflips.ingest.util
+import eflips.model
+
 from eflips.ingest.legacy.xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
-from eflips.ingest.util import soldner_to_pointz, geometry_has_z
+from eflips.ingest.util import soldner_to_pointz
+from eflips.model.util import geometry_has_z
 
 
 def load_and_validate_xml(filename: Path) -> Linienfahrplan:
