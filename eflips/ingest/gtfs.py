@@ -41,7 +41,7 @@ from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
-from eflips.ingest.util import get_altitude, geometry_has_z
+from eflips.model.util import get_altitude, geometry_has_z
 
 # Single shared geodesic helper. WGS84 matches the GTFS coordinate system.
 _GEOD = Geod(ellps="WGS84")

@@ -14,7 +14,7 @@ from typing import Optional, Dict, Tuple, List
 
 from eflips.model import VehicleType, Scenario, Rotation, Line, Route, AssocRouteStation, Station
 
-from eflips.ingest.util import get_altitude, geometry_has_z
+from eflips.model.util import get_altitude, geometry_has_z
 
 
 class OnrTyp(Enum):

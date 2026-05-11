@@ -10,7 +10,6 @@ import pytest
 
 from eflips.ingest.gtfs import GtfsIngester
 from tests.base import BaseIngester
-from tests.conftest import mock_get_altitude
 
 
 class TestGtfsIngester(BaseIngester):
@@ -23,20 +22,9 @@ class TestGtfsIngester(BaseIngester):
     """
 
     @pytest.fixture(autouse=True)
-    def setup_altitude_mock(self, monkeypatch) -> None:
-        """Automatically mock altitude lookups for all tests in this class."""
-        monkeypatch.setattr(
-            "eflips.ingest.util.get_altitude",
-            mock_get_altitude,
-        )
-        monkeypatch.setattr(
-            "eflips.ingest.util.get_altitude_google",
-            mock_get_altitude,
-        )
-        monkeypatch.setattr(
-            "eflips.ingest.util.get_altitude_openelevation",
-            mock_get_altitude,
-        )
+    def disable_altitude_lookups(self, monkeypatch) -> None:
+        """Bypass network altitude lookups for all tests in this class."""
+        monkeypatch.setenv("ELEVATION_DUMMY_MODE", "True")
 
     @pytest.fixture()
     def ingester(self) -> GtfsIngester:
