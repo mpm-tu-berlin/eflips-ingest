@@ -1524,8 +1524,9 @@ class GtfsIngester(AbstractIngester):
         identified.
 
         With no shape geometry to compare against we trust the GTFS spec
-        and assume meters. Otherwise we compare ``max_raw_value`` against
-        the shape's geodetic length and accept the first ±5% band that
+        and assume meters. Otherwise we compute ``geodetic / max_raw_value``
+        — which equals the unit's true scale factor when the producer's
+        values are in that unit — and accept the first ±5% band that
         matches:
 
         - meters       (factor 1.0)
@@ -1547,22 +1548,45 @@ class GtfsIngester(AbstractIngester):
             return 1.0
         if geodetic <= 0.0 or max_raw_value <= 0.0:
             return None
-        ratio = max_raw_value / geodetic
+        match = self._match_unit_band(geodetic, max_raw_value)
+        if match is None:
+            self.logger.warning(
+                f"Route {route_name!r}: geodetic / max(shape_dist_traveled) "
+                f"= {geodetic / max_raw_value:.3f} matches no known unit factor "
+                f"(meters/km/miles, ±5%); falling back to shape projection."
+            )
+            return None
+        unit_name, factor = match
+        if factor != 1.0:
+            self.logger.warning(
+                f"Route {route_name!r}: stop_times.shape_dist_traveled appears "
+                f"to be in {unit_name} (geodetic / max_raw = "
+                f"{geodetic / max_raw_value:.3f} vs nominal {factor}; "
+                f"geodetic length {geodetic:.0f} m, max raw value "
+                f"{max_raw_value:.3f}). Rescaling by {factor}; the GTFS spec "
+                f"mandates meters, please fix the feed upstream."
+            )
+        return factor
+
+    @staticmethod
+    def _match_unit_band(geodetic: float, max_raw_value: float) -> Tuple[str, float] | None:
+        """Pure band-matcher for ``shape_dist_traveled`` unit detection.
+
+        Returns the ``(unit_name, factor)`` whose nominal factor sits within
+        ±5% of ``geodetic / max_raw_value``, or ``None`` when no band matches.
+
+        ``factor`` converts a raw value to meters, so the producer's max
+        value times factor should equal the geodetic length:
+        ``max_raw_value * factor ≈ geodetic`` ⇔ ``geodetic / max_raw_value ≈ factor``.
+        We therefore compare ``geodetic / max_raw_value`` directly to each
+        band's nominal factor.
+        """
+        if geodetic <= 0.0 or max_raw_value <= 0.0:
+            return None
+        implied_factor = geodetic / max_raw_value
         for unit_name, factor in _UNIT_BANDS:
-            if (1.0 - _UNIT_BAND_TOLERANCE) * factor <= ratio <= (1.0 + _UNIT_BAND_TOLERANCE) * factor:
-                if factor != 1.0:
-                    self.logger.warning(
-                        f"Route {route_name!r}: stop_times.shape_dist_traveled appears "
-                        f"to be in {unit_name} (ratio {ratio:.3f} vs shape geodetic "
-                        f"length {geodetic:.0f} m). Rescaling by {factor}; the GTFS "
-                        f"spec mandates meters, please fix the feed upstream."
-                    )
-                return factor
-        self.logger.warning(
-            f"Route {route_name!r}: max(stop_times.shape_dist_traveled)/geodetic "
-            f"= {ratio:.3f} matches no known unit (meters/km/miles, ±5%); "
-            f"falling back to shape projection."
-        )
+            if (1.0 - _UNIT_BAND_TOLERANCE) * factor <= implied_factor <= (1.0 + _UNIT_BAND_TOLERANCE) * factor:
+                return unit_name, factor
         return None
 
     def _source_a_shape_dist_traveled(
