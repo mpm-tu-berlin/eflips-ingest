@@ -593,6 +593,39 @@ class TestGtfsIngester(BaseIngester):
         assert coerce(["a", "", "b"]) == ["a", "b"]
         assert coerce(("a", None, "b")) == ["a", "b"]
 
+    def test_match_unit_band(self) -> None:
+        """Pin the shape_dist_traveled unit detection bands.
+
+        Regression: before this test existed the comparison was inverted —
+        a 10 km route shipping shape_dist_traveled in km gave
+        ``ratio = 10 / 10000 = 0.001`` and matched no band, so km / miles
+        feeds silently fell through to Source B even when the values were
+        otherwise usable. The matcher now compares ``geodetic / max_raw``
+        to each nominal factor (1, 1000, 1609.344) within ±5%.
+        """
+        match = GtfsIngester._match_unit_band
+
+        # Meters: max_raw == geodetic → factor 1.0
+        assert match(10_000.0, 10_000.0) == ("meters", 1.0)
+        assert match(10_000.0, 9_700.0) == ("meters", 1.0)  # +3% within band
+        assert match(10_000.0, 10_300.0) == ("meters", 1.0)  # -3% within band
+
+        # Kilometers: max_raw is geodetic/1000 → factor 1000.0
+        assert match(10_000.0, 10.0) == ("kilometers", 1000.0)
+        assert match(10_000.0, 10.4) == ("kilometers", 1000.0)  # within band
+        assert match(15_321.7, 15.5) == ("kilometers", 1000.0)
+
+        # Miles: max_raw is geodetic/1609.344 → factor 1609.344
+        assert match(16_093.44, 10.0) == ("miles", 1609.344)
+        assert match(8_046.72, 5.0) == ("miles", 1609.344)
+        assert match(16_093.44, 10.4) == ("miles", 1609.344)  # within band
+
+        # Outside every band → None (gibberish or unknown unit)
+        assert match(10_000.0, 50.0) is None  # ratio 200, between km and miles
+        assert match(10_000.0, 0.5) is None  # ratio 20000, way out
+        assert match(10_000.0, 0.0) is None  # invalid input
+        assert match(0.0, 10.0) is None  # invalid input
+
     # ====================
     # AssocRouteStation.elapsed_distance Tests
     # ====================
