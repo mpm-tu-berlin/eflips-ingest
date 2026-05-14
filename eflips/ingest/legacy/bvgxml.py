@@ -1,4 +1,46 @@
 #!/usr/bin/env python3
+"""
+Legacy core of the BVG-XML ingester.
+
+The public entry point is :func:`ingest_bvgxml` (used by the CLI), but the
+helpers in this module are also re-used by :class:`eflips.ingest.bvgxml.BvgxmlIngester`.
+
+The pipeline runs in this order:
+
+1. :func:`load_and_validate_xml` parses one ``Linienfahrplan`` XML file and
+   validates it against ``data/bvg_xml.xsd``.
+2. :func:`create_stations` writes ``Haltestellenbereich`` entries (Hst-type
+   stations) directly.
+3. :func:`create_routes_and_time_profiles` walks each route's Punktfolge,
+   resolving each Netzpunkt to a parent station via
+   :func:`add_or_ret_station_for_grid_point` (which prefers the explicit
+   ``Netzpunkt.haltestellenbereich`` FK and falls back to short-name prefix
+   matching) and emits ``Route`` + ``AssocRouteStation`` rows.
+4. :func:`create_trip_prototypes` + :func:`create_trips_and_vehicle_schedules`
+   produce ``Rotation`` / ``Trip`` / ``StopTime`` rows.
+5. :func:`merge_identical_stations` merges duplicate stations grouped by
+   short-name prefix, with :data:`STATION_MERGE_GROUPS` as explicit overrides
+   for sibling stations whose names don't share a prefix (e.g. depots).
+6. :func:`merge_identical_rotations` chains same-named rotation fragments
+   into a single depot→…→depot rotation. Chains that can't close (because
+   their other half is in an XML file outside the input set) are deleted
+   with a WARNING log — this is the "edge-of-window" cleanup. Depot
+   detection is governed by :data:`DEPOT_NAME_TOKENS`.
+7. :func:`identify_and_delete_overlapping_rotations` deletes rotations
+   whose trips overlap in time (typically caused by step 6 merging
+   incompatible fragments).
+8. :func:`fix_max_sequence` repoints sequences so subsequent inserts don't
+   collide with the IDs we set explicitly.
+
+Berlin-specific knobs live in three module-level constants near the top
+of the file and should be edited (not the function bodies) when a new
+deployment surfaces a new edge case:
+
+- :data:`DEPOT_NAME_TOKENS` — substrings that mark a station as a depot.
+- :data:`STATION_MERGE_GROUPS` — pre-declared station merge overrides.
+- :data:`POINTLESS_ROUTE_SIGNATURES` — routes to drop when they collapse
+  to a single station.
+"""
 import glob
 import logging
 import os
@@ -72,7 +114,6 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     parser = XmlParser()
 
     data: Linienfahrplan = parser.from_string(xml_string, Linienfahrplan)
-
     return data
 
 
@@ -167,14 +208,31 @@ def add_or_ret_station_for_grid_point(
         )
         if station is None:
             # The station should have already been created in the previous step
-            raise ValueError(f"Station for grid point {gridpoint_id} not found, even though it is of type 'Hst'")
+            raise ValueError(
+                f"Station for grid point {gridpoint_id} (Hst, kurzname={grid_point.kurzname!r}, "
+                f"haltestellenbereich={grid_point.haltestellenbereich}) not found; "
+                f"add_or_ret_station should have created it from the Haltestellenbereich list earlier."
+            )
     elif grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.BPUNKT:
-        # Assumption: A "Betriebspunkt" basically belongs to the station for our purposes
-        # We query the station by the four-character short name
+        # Preferred: the XML now optionally exposes Netzpunkt.haltestellenbereich
+        # as a direct FK to the Haltestellenbereich (the parent Hst-like station).
+        # Use it when present so we never have to guess from the kurzname prefix.
+        station = None
+        if grid_point.haltestellenbereich is not None:
+            station = (
+                session.query(eflips.model.Station)
+                .filter(eflips.model.Station.scenario_id == scenario_id)
+                .filter(eflips.model.Station.id == grid_point.haltestellenbereich)
+                .one_or_none()
+            )
+            if station is not None:
+                return station
+
+        # Fallback: A "Betriebspunkt" usually belongs to the station whose short
+        # name matches its kurzname prefix. Try 4 chars (trailing 0/1 indicates a
+        # 3-char-named parent station).
         short_name = grid_point.kurzname[0:4]
         if short_name.endswith("0") or short_name.endswith("1"):
-            # The 0 or 1 seems to be added to the short name for bpunkts corresponding to stations which actually have a
-            # three-character short name. if we shorten the short name to three characters, we can find the station
             short_name = short_name[0:3]
         station = (
             session.query(eflips.model.Station)
@@ -205,12 +263,25 @@ def add_or_ret_station_for_grid_point(
             #    f"Station for grid point {gridpoint_id} not found, even though it is of type 'BPUNKT' and should have a station"
             # )
     elif grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT or grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.APKT:
-        # We want to merge the Einsetzpunkt and Aussetzpunkt stations into one station
+        typ_tag = "epkt" if grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT else "apkt"
+        # Preferred: explicit Haltestellenbereich FK.
+        if grid_point.haltestellenbereich is not None:
+            via_hb = (
+                session.query(eflips.model.Station)
+                .filter(eflips.model.Station.scenario_id == scenario_id)
+                .filter(eflips.model.Station.id == grid_point.haltestellenbereich)
+                .one_or_none()
+            )
+            if via_hb is not None:
+                return via_hb
+
+        # Fallback: derive parent from the Einsetz/Aussetz naming convention.
         # Make sure the short name ends in "E" or "A", then remove that character
         short_name = grid_point.kurzname
         if short_name[-1] != "E" and short_name[-1] != "A":
             raise ValueError(
-                f"Station for grid point {gridpoint_id} not found, even though it is of type 'EPKT' or 'APKT' and should have a station"
+                f"Grid point {gridpoint_id} (EPkt/APkt, kurzname={short_name!r}, langname={grid_point.langname!r}) "
+                f"has a kurzname that does not end in 'E' or 'A'; cannot derive parent station short name."
             )
         short_name = short_name[:-2]
 
@@ -218,7 +289,8 @@ def add_or_ret_station_for_grid_point(
         long_name = grid_point.langname
         if long_name[-9:] != "Einsetzen" and long_name[-9:] != "Aussetzen":
             raise ValueError(
-                f"Station for grid point {gridpoint_id} not found, even though it is of type 'EPKT' or 'APKT' and should have a station"
+                f"Grid point {gridpoint_id} (EPkt/APkt, kurzname={grid_point.kurzname!r}, langname={long_name!r}) "
+                f"has a langname that does not end in 'Einsetzen' or 'Aussetzen'; cannot derive parent station name."
             )
         long_name = long_name[:-10]
 
@@ -243,7 +315,10 @@ def add_or_ret_station_for_grid_point(
             )
             session.add(station)
     else:
-        raise ValueError(f"Grid point {gridpoint_id} is of type {grid_point.netzpunkttyp}, which is not supported")
+        raise ValueError(
+            f"Grid point {gridpoint_id} (kurzname={grid_point.kurzname!r}, langname={grid_point.langname!r}) "
+            f"is of type {grid_point.netzpunkttyp}, which is not supported."
+        )
 
     return station
 
@@ -398,8 +473,13 @@ class TimeProfile:
         # Create the stoptimes
         for i in range(len(self.time_profile_points)):
             if self.time_profile_points[i].station != self.route.assoc_route_stations[i].station:
+                tp_station = self.time_profile_points[i].station
+                rt_station = self.route.assoc_route_stations[i].station
                 raise ValueError(
-                    f"Station {self.time_profile_points[i].station.name} at position {i} does not match the station {self.route.assoc_route_stations[i].station.name} in the route"
+                    f"In to_trip() for route {self.route.name!r} (id={self.route.id}) on date {the_date}: "
+                    f"time-profile station mismatch at position {i}: "
+                    f"profile says {tp_station.name!r} (id={tp_station.id}) but route says "
+                    f"{rt_station.name!r} (id={rt_station.id})."
                 )
 
             stoptime = eflips.model.StopTime(
@@ -478,7 +558,10 @@ def fix_times(points: List[TimeProfile.TimeProfilePoint]) -> List[TimeProfile.Ti
     # Check if the points are sorted by arrival offset
     for i in range(len(points) - 1):
         if points[i].arrival_offset_from_start > points[i + 1].arrival_offset_from_start:
-            raise ValueError("Points are not sorted by arrival offset")
+            raise ValueError(
+                f"Time profile points are not sorted by arrival_offset_from_start: "
+                f"offsets={[p.arrival_offset_from_start for p in points]}"
+            )
 
     # Check if there are any identical arrival offsets and fix them
     # Taking into account that there might be multiple identical arrival offsets in a row
@@ -504,9 +587,17 @@ def fix_times(points: List[TimeProfile.TimeProfilePoint]) -> List[TimeProfile.Ti
     # Check if the points are sorted by arrival offset
     for i in range(len(points) - 1):
         if points[i].arrival_offset_from_start >= points[i + 1].arrival_offset_from_start:
-            raise ValueError("Points are not sorted by arrival offset")
+            raise ValueError(
+                f"Time profile points are not sorted by arrival_offset_from_start: "
+                f"offsets={[p.arrival_offset_from_start for p in points]}"
+            )
     if points[-1].arrival_offset_from_start.total_seconds() % 60 != 0:
-        raise ValueError("The last point does not have an arrival offset in full minutes, which it should have")
+        last = points[-1]
+        raise ValueError(
+            f"After fix_times, the last time-profile point should have an arrival offset in full minutes, "
+            f"but is {last.arrival_offset_from_start.total_seconds()}s at station "
+            f"{getattr(last.station, 'name', None)!r} (id={getattr(last.station, 'id', None)})."
+        )
 
     return points
 
@@ -592,7 +683,7 @@ def create_routes_and_time_profiles(
             if i == len(route.punktfolge.punkt) - 1 and elapsed_distance == 0:
                 # We mark these by putting an obscenely large number in the distance
                 logger.warning(f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end.")
-                elapsed_distance += 1e6 * 1000  # One million kilometers
+                elapsed_distance += ZERO_DISTANCE_SENTINEL_M
 
             # Some time profiles have a zero time at the end
             if i == len(route.punktfolge.punkt) - 1:
@@ -707,36 +798,40 @@ def create_routes_and_time_profiles(
         # Now, do some sanity checks
         last_distance = None
         if len(assocs) < 2:
-            # There are some routes which we have manually checked out and figured to be pointless
-            if [p.netzpunkt for p in route.punktfolge.punkt] == [102001974, 101001974, 101029999, 101001974, 102001974]:
-                # This is a bus which just stands aroung in Alt-Gatow for a while ?!?!?!?!?
-                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
-                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
+            # The route collapsed to fewer than 2 distinct station associations.
+            # Check whether this is a known turnaround/standby pattern; if so
+            # we record it as None (so trips referencing it are dropped). If
+            # the signature is unknown we raise so a human can decide.
+            netzpunkt_sequence = tuple(p.netzpunkt for p in route.punktfolge.punkt)
+            matched_label = None
+            for label, signature in POINTLESS_ROUTE_SIGNATURES:
+                if netzpunkt_sequence == signature:
+                    matched_label = label
+                    break
+            if matched_label is not None:
+                logger.info(
+                    "Route lfd_nr=%d of line %r matches pointless-route override %r; skipping.",
+                    route.lfd_nr,
+                    db_line.name,
+                    matched_label,
+                )
                 db_routes_by_lfd_nr[route.lfd_nr] = None
                 continue
-            elif [p.netzpunkt for p in route.punktfolge.punkt] == [102021010, 101021010, 101002083, 102002083]:
-                # This might be a turning-around at Osloer Straße. We don't need it
-                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
-                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
-                db_routes_by_lfd_nr[route.lfd_nr] = None
-                continue
-            elif [p.netzpunkt for p in route.punktfolge.punkt] == [102002050, 101021010, 101002083, 102002083]:
-                # This might be a turning-around at Osloer Straße. We don't need it
-                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
-                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
-                db_routes_by_lfd_nr[route.lfd_nr] = None
-                continue
-            elif [p.netzpunkt for p in route.punktfolge.punkt] == [102004107, 101004107, 101004108, 102004108]:
-                # Turning around at Hermannstraße
-                logger.info(f"Route {route.lfd_nr} of line {db_line.name} is a pointless route. Skipping")
-                # Write none to the dict of routes, to show we're aware of this route, but it's pointless
-                db_routes_by_lfd_nr[route.lfd_nr] = None
-                continue
-            raise ValueError("There should be at least one assoc")
+            raise ValueError(
+                f"Route lfd_nr={route.lfd_nr} of line {db_line.name!r} produced fewer than 2 station "
+                f"associations (route is single-stop or self-loop). "
+                f"Netzpunkt sequence: {list(netzpunkt_sequence)}. "
+                f"If this is a known turnaround/standby route, add its signature to "
+                f"POINTLESS_ROUTE_SIGNATURES near the top of bvgxml.py."
+            )
         for assoc in assocs:
             if last_distance is not None:
                 if not assoc.elapsed_distance > last_distance:
-                    raise ValueError("The elapsed distance should be increasing for each assoc")
+                    raise ValueError(
+                        f"Route lfd_nr={route.lfd_nr} of line {db_line.name!r}: elapsed_distance must be "
+                        f"strictly increasing along the route, but got {last_distance} -> {assoc.elapsed_distance} "
+                        f"at station {assoc.station.name!r} (id={assoc.station.id})."
+                    )
             last_distance = assoc.elapsed_distance
         del last_distance
 
@@ -744,7 +839,11 @@ def create_routes_and_time_profiles(
             last_time = None
             this_vehicles_time_profile_points = time_profile_points[fahrzeitprofil.fahrzeitprofil_nummer]
             if len(this_vehicles_time_profile_points) < 2:
-                raise ValueError("There should be at least one time profile point")
+                raise ValueError(
+                    f"Route lfd_nr={route.lfd_nr} of line {db_line.name!r}, fahrzeitprofil "
+                    f"{fahrzeitprofil.fahrzeitprofil_nummer}: expected >= 2 time-profile points, got "
+                    f"{len(this_vehicles_time_profile_points)}."
+                )
             for time_profile_point in this_vehicles_time_profile_points:
                 if last_time is not None:
                     if not time_profile_point.arrival_offset_from_start > last_time:
@@ -769,7 +868,11 @@ def create_routes_and_time_profiles(
             last_grid_point=grid_points[route.punktfolge.punkt[-1].netzpunkt],
         )
 
-        # Now we can check if there already is a route with the same assocs
+        # Now we can check if there already is a route with the same assocs.
+        # We compare by station identity and elapsed_distance rounded to mm —
+        # the source XML reports distances as integer millimeters but they
+        # round-trip through float and accumulate over many segments, so
+        # bit-exact equality is fragile across different addition orders.
         route_already_exists = False
         route_q = (
             session.query(eflips.model.Route)
@@ -777,6 +880,10 @@ def create_routes_and_time_profiles(
             .filter(eflips.model.Route.name == db_route.name)
             .filter(eflips.model.Route.name_short == db_route.name_short)
         )
+
+        def _dist_key(d: float) -> int:
+            return round(float(d) * 1000)  # mm precision
+
         if route_q.count() > 0:
             for existing_route in route_q:
                 if len(existing_route.assoc_route_stations) == len(assocs):
@@ -785,7 +892,8 @@ def create_routes_and_time_profiles(
                         if (
                             existing_route.assoc_route_stations[i].station != assocs[i].station
                             or existing_route.assoc_route_stations[i].location != assocs[i].location
-                            or existing_route.assoc_route_stations[i].elapsed_distance != assocs[i].elapsed_distance
+                            or _dist_key(existing_route.assoc_route_stations[i].elapsed_distance)
+                            != _dist_key(assocs[i].elapsed_distance)
                         ):
                             equal = False
                             break  # We can stop comparing the assocs
@@ -853,7 +961,13 @@ def create_trip_prototypes(
         for i in range(len(time_profile)):
             if time_profile[i].station != db_route.assoc_route_stations[i].station:
                 raise ValueError(
-                    f"Station {time_profile[i].station.name} at position {i} does not match the station {db_route.assoc_route_stations[i].station.name} in the route"
+                    f"Route lfd_nr={route_lfd_nr} (line={db_route.line.name if db_route.line else None!r}), "
+                    f"fahrzeitprofil={fahrt.fahrzeitprofil}, trip fahrt_id={fahrt.id}: "
+                    f"time-profile station mismatch at position {i}: "
+                    f"profile says {time_profile[i].station.name!r} "
+                    f"(id={time_profile[i].station.id}) but route says "
+                    f"{db_route.assoc_route_stations[i].station.name!r} "
+                    f"(id={db_route.assoc_route_stations[i].station.id})."
                 )
 
         profile = TimeProfile(
@@ -908,12 +1022,19 @@ def create_trips_and_vehicle_schedules(
                 part_trips = []
                 for vehicle_type_str in umlaufteilgruppe.fahrzeugtyp:
                     if vehicle_type_str != vehicle_type.name_short:
-                        raise ValueError(f"Vehicle type changed while within Umlauf {xml_rotation.umlauf_id}!")
+                        raise ValueError(
+                            f"Vehicle type changed within Umlauf {xml_rotation.umlauf_id} "
+                            f"(bezeichnung={xml_rotation.umlaufbezeichnung!r}, date={the_date}): "
+                            f"started as {vehicle_type.name_short!r} but Umlaufteilgruppe says "
+                            f"{vehicle_type_str!r}."
+                        )
                     for fahrt in umlaufteilgruppe.fahrtreihenfolge.fahrt:
                         if fahrt.fahrt_id not in trip_prototypes.keys():
                             raise ValueError(
-                                f"Trip {fahrt.fahrt_id} from Umlauf {xml_rotation.umlauf_id} is not known! "
-                                f"Is it from another Linie, which XML file we are missing?"
+                                f"Trip fahrt_id={fahrt.fahrt_id} referenced by Umlauf {xml_rotation.umlauf_id} "
+                                f"(bezeichnung={xml_rotation.umlaufbezeichnung!r}, date={the_date}) is not in "
+                                f"trip_prototypes. This usually means the XML file for the trip's line was not "
+                                f"included in the input zip."
                             )
                         tp = trip_prototypes[fahrt.fahrt_id]
                         if tp is None:
@@ -934,8 +1055,23 @@ def create_trips_and_vehicle_schedules(
                 cur_trip = rotation_trips[i]
                 next_trip = rotation_trips[i + 1]
                 if cur_trip.stop_times[-1].station != next_trip.stop_times[0].station:
+                    # Two consecutive trips of the same rotation should pick up
+                    # where the previous trip left off. They sometimes don't
+                    # when the same physical place is split across multiple
+                    # Haltestellenbereich rows; merge_identical_stations should
+                    # clean it up later, so this is only an INFO log.
+                    cur_st = cur_trip.stop_times[-1].station
+                    next_st = next_trip.stop_times[0].station
                     logger.info(
-                        f"Trip {cur_trip.id} and {next_trip.id} have different stations: first {cur_trip.stop_times[-1].station.name} (ID f{cur_trip.stop_times[-1].station.id}), then {next_trip.stop_times[0].station.name} (ID f{next_trip.stop_times[0].station.id})."
+                        "Rotation %r (date=%s): trip arriving at %r (id=%d) is followed by "
+                        "a trip departing from %r (id=%d). If these are not merged later, "
+                        "the rotation will be flagged for geometric inconsistency.",
+                        rotation.name.strip() or "<pending>",
+                        the_date,
+                        cur_st.name,
+                        cur_st.id,
+                        next_st.name,
+                        next_st.id,
                     )
             session.add_all(rotation_trips)
 
@@ -1071,18 +1207,28 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
     :param scenario_id: The scenario ID to use
     :param session: An open database session
     :return: Nothing. The stations are updated in the database
-    """
-    """
-    Merge all stations where the first four characters of the short name are the same.
-    Also has special handling for three-letter short names, where the first three characters are the same followed by
-    an underscore.
 
-    Also very special handling for Berlin Airport, where the short name is "BER1".
+    Merges stations by:
 
-    :param scenario:
-    :param session:
-    :return: Nothing. Databases are updated in place.
+    1. **Prefix grouping**: bucket by the first four characters of ``name_short``
+       (or the part before ``_`` for three-character short names with an
+       underscore-suffixed variant). Stations starting with ``BF `` (depots)
+       are not merged with non-depot stations through this rule.
+    2. **Special-case overrides** in :data:`STATION_MERGE_GROUPS`: a list of
+       short-name groups that should always be merged together when present.
+       These map cases where the prefix rule wouldn't connect a depot
+       (``BF L``) with its sibling Hst (``BHLI``).
+    3. **Berlin Airport rename**: short-name ``BER1`` is canonicalized to
+       ``BER`` before bucketing.
+
+    For every group with > 1 station, the one with the shortest ``name`` is
+    kept; the others have their Route / AssocRouteStation / StopTime
+    references re-pointed before the row itself is deleted. No row that is
+    referenced from the source XML is dropped without its references being
+    moved first.
     """
+    logger = logging.getLogger(__name__)
+
     # Load all stations, grouped by the first four characters of the short name
     # If the short name contains an unserscore, we take all the characters before the underscore
     stations_by_short_name: Dict[str, List[Station]] = {}
@@ -1104,24 +1250,28 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
             stations_by_short_name[short_name] = []
         stations_by_short_name[short_name].append(station)
 
-    # Also, manually add some known stations which should be merged
-    # BF L with BHLI
-    bh_i_station = session.query(Station).filter(Station.name_short == "BHLI").first()
-    bf_l_station = session.query(Station).filter(Station.name_short == "BF L").first()
-    if bh_i_station is not None and bf_l_station is not None:
-        stations_by_short_name["BF L"] = [bh_i_station, bf_l_station]
-
-    # BF B with BTRB
-    btr_b_station = session.query(Station).filter(Station.name_short == "BTRB").first()
-    bf_b_station = session.query(Station).filter(Station.name_short == "BF B").first()
-    if btr_b_station is not None and bf_b_station is not None:
-        stations_by_short_name["BF B"] = [btr_b_station, bf_b_station]
-
-    # BF I with BFI
-    bfi_station = session.query(Station).filter(Station.name_short == "BFI").first()
-    bf_i_station = session.query(Station).filter(Station.name_short == "BF I").first()
-    if bfi_station is not None and bf_i_station is not None:
-        stations_by_short_name["BF I"] = [bfi_station, bf_i_station]
+    # Manual overrides for groups the prefix rule can't connect:
+    # the depot's short_name (e.g. "BF L") doesn't share a prefix with the
+    # associated Haltestellenbereich short_name (e.g. "BHLI"). The override
+    # only fires when both sides are present in the loaded data.
+    for group_key, group_members in STATION_MERGE_GROUPS:
+        found = []
+        for member_short in group_members:
+            s = (
+                session.query(Station)
+                .filter(Station.scenario_id == scenario_id)
+                .filter(Station.name_short == member_short)
+                .first()
+            )
+            if s is not None:
+                found.append(s)
+        if len(found) >= 2:
+            logger.info(
+                "Applying station-merge override %r: %s",
+                group_key,
+                [s.name_short for s in found],
+            )
+            stations_by_short_name[group_key] = found
 
     for short_name, stations in stations_by_short_name.items():
         if len(stations) > 1:
@@ -1151,24 +1301,86 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
                     session.delete(other_station)
 
 
+# Substrings that mark a station as a depot. A rotation that starts and ends at
+# stations whose names contain any of these is considered "complete"; partial
+# rotations that don't form a depot→…→depot chain are deleted (they're usually
+# fragments whose other halves live in XML files we don't have).
+DEPOT_NAME_TOKENS: Tuple[str, ...] = ("Betriebshof", "Abstellfläche")
+
+
+# Sentinel applied to ``Route.distance`` when ``create_routes_and_time_profiles``
+# encounters a Punktfolge that walked back to its own start (cumulative
+# Streckenlänge of 0). The post-processing step in :class:`BvgxmlIngester`
+# rewrites these distances using the geometric distance between the
+# departure and arrival stations and prepends "CHECK DISTANCE:" to the route
+# name. One million kilometers is large enough that no real Berlin route
+# could ever match it, so we can use it as a query filter cleanly.
+ZERO_DISTANCE_SENTINEL_M: float = 1e6 * 1000  # one million kilometers, in meters
+
+
+# Station-merge overrides for sibling stations whose short names don't share a
+# prefix and therefore aren't connected by :func:`merge_identical_stations`'s
+# prefix-grouping rule. Each entry is ``(group_key, (short_name, …))``; when
+# ≥ 2 of the listed short names exist in the loaded data, they're merged into
+# a group. ``group_key`` is the identifier used for logging only — pick
+# something descriptive of the canonical name. Edit this list to register new
+# Berlin-specific mappings instead of adding code in
+# :func:`merge_identical_stations`.
+STATION_MERGE_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("BF L", ("BHLI", "BF L")),
+    ("BF B", ("BTRB", "BF B")),
+    ("BF I", ("BFI", "BF I")),
+)
+
+
+# Known "pointless" route signatures. Each entry is a (label, netzpunkt-id
+# sequence) tuple. When a Route's Punktfolge produces fewer than 2 distinct
+# station associations AND its Netzpunkt-id sequence matches one of these,
+# the route is skipped (recorded as ``None`` in db_routes_by_lfd_nr). Unknown
+# pointless signatures raise a ValueError so that human review can decide
+# whether they're a real bug or another stand-still/turnaround pattern.
+#
+# These are Berlin-specific patterns — to add a new one, capture the
+# Netzpunkt sequence reported in the raised ValueError and append it here.
+POINTLESS_ROUTE_SIGNATURES: Tuple[Tuple[str, Tuple[int, ...]], ...] = (
+    # A bus that just stands around in Alt-Gatow for a while.
+    ("alt_gatow", (102001974, 101001974, 101029999, 101001974, 102001974)),
+    # Turnaround at Osloer Straße, two flavors.
+    ("osloer_a", (102021010, 101021010, 101002083, 102002083)),
+    ("osloer_b", (102002050, 101021010, 101002083, 102002083)),
+    # Turning around at Hermannstraße.
+    ("hermannstrasse", (102004107, 101004107, 101004108, 102004108)),
+)
+
+
+def _name_is_depot(name: str | None) -> bool:
+    if name is None:
+        return False
+    return any(token in name for token in DEPOT_NAME_TOKENS)
+
+
 def merge_identical_rotations(scenario_id: int, session: Session) -> None:
     """
-    This method merges rotations which have an identical name. It does so by merging everything from
-    a rotation beginning at a "Betriebshof"to the next "Betriebshof".
-    This needs to be done because different parts of a rotation may be in different files, and so different
-    "Rotation" objects for what is essentially the same rotation may be created.
+    Merge rotations with identical names by chaining them depot→…→depot.
+
+    Different parts of a single physical rotation may live in different XML
+    files (because the XML is sliced by Linie), so the ingester produces
+    multiple :class:`Rotation` rows for what is conceptually one rotation.
+    This function joins those fragments back together when they form a closed
+    depot-to-depot chain, and deletes fragments that don't (those are partial
+    rotations whose other halves live in XML files outside the input zip —
+    i.e. they fall off the edge of the time window covered by the input).
+
+    All deletions are logged at WARNING level with the rotation name, the
+    span of trip dates / endpoint stations involved, and how many trips are
+    being dropped, so callers can tell how much data is lost to edge
+    truncation.
+
     :param scenario_id: the scenario ID to use
     :param session: an open database session
     :return: Nothing. The rotations are updated in the database
     """
-
-    def is_depot(name: str) -> bool:
-        """
-        Check if the name of a station contains "Betriebshof" or "Abstellfläche"
-        :param name: The name of the station
-        :return: True if the name contains "Betriebshof" or "Abstellfläche", False otherwise
-        """
-        return "Betriebshof" in name or "Abstellfläche" in name
+    logger = logging.getLogger(__name__)
 
     rotation_names = (
         session.query(eflips.model.Rotation.name)
@@ -1195,27 +1407,33 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             first_station_departure_time = rotation.trips[0].departure_time
             last_station_arrival_time = rotation.trips[-1].arrival_time
 
-            if is_depot(first_station_name) and is_depot(last_station_name):
+            if _name_is_depot(first_station_name) and _name_is_depot(last_station_name):
                 # This is a rotation that starts and ends at the depot
                 # We don't need to merge it with anything
                 continue
-            elif is_depot(first_station_name) and not is_depot(last_station_name):
+            elif _name_is_depot(first_station_name) and not _name_is_depot(last_station_name):
                 # This rotation starts at the depot and ends somewhere else
                 # Start a new list after appending the current list to the list of lists
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = [rotation.id]
-            elif not is_depot(first_station_name) and is_depot(last_station_name):
+            elif not _name_is_depot(first_station_name) and _name_is_depot(last_station_name):
                 # This rotation starts somewhere else and ends at the depot
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
                 list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
                 rotation_ids_to_merge = []
-            elif not is_depot(first_station_name) and not is_depot(last_station_name):
+            elif not _name_is_depot(first_station_name) and not _name_is_depot(last_station_name):
                 # This rotation starts and ends somewhere else
                 # Append the current rotation to the list
                 rotation_ids_to_merge.append(rotation.id)
             else:
-                raise ValueError("This should never happen")
+                # All four (depot, depot) / (depot, ¬depot) / (¬depot, depot) / (¬depot, ¬depot)
+                # branches are covered above; this is genuinely unreachable.
+                raise ValueError(
+                    f"Unreachable branch in merge_identical_rotations for rotation "
+                    f"name={rotation.name!r} id={rotation.id} "
+                    f"start={first_station_name!r} end={last_station_name!r}."
+                )
 
         # Remove empty lists
         list_of_rotation_id_tuples_to_merge = [x for x in list_of_rotation_id_tuples_to_merge if len(x) > 0]
@@ -1233,9 +1451,34 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
             # And both must contain "Betriebshof"
             if (
                 rotations[0].trips[0].route.departure_station.name != rotations[-1].trips[-1].route.arrival_station.name
-                or not (is_depot(rotations[0].trips[0].route.departure_station.name))
-                or not (is_depot(rotations[-1].trips[-1].route.arrival_station.name))
+                or not (_name_is_depot(rotations[0].trips[0].route.departure_station.name))
+                or not (_name_is_depot(rotations[-1].trips[-1].route.arrival_station.name))
             ):
+                first_dep = rotations[0].trips[0].route.departure_station.name
+                last_arr = rotations[-1].trips[-1].route.arrival_station.name
+                first_time = rotations[0].trips[0].departure_time
+                last_time = rotations[-1].trips[-1].arrival_time
+                trip_count = sum(len(r.trips) for r in rotations)
+                if first_dep == last_arr:
+                    reason = (
+                        f"endpoints match ({first_dep!r}) but are not a known depot. "
+                        f"Add the station to DEPOT_NAME_TOKENS if it should be treated as one."
+                    )
+                else:
+                    reason = (
+                        f"chain start {first_dep!r} != chain end {last_arr!r}; "
+                        f"this is the typical signature of a partial rotation whose other "
+                        f"half is in an XML file outside the input zip (edge-of-window)."
+                    )
+                logger.warning(
+                    "Deleting %d-fragment rotation chain name=%r (%d trips, %s → %s): %s",
+                    len(rotations),
+                    rotations[0].name,
+                    trip_count,
+                    first_time.isoformat() if first_time else None,
+                    last_time.isoformat() if last_time else None,
+                    reason,
+                )
                 # If the merge is not possible we delete these rotations
                 for rotation in rotations:
                     for trip in rotation.trips:
@@ -1386,7 +1629,13 @@ def ingest_bvgxml(
         for fahrt_id, time_profile in the_dict.items():
             if fahrt_id in trip_prototypes:
                 if trip_prototypes[fahrt_id] != time_profile:
-                    raise ValueError(f"Trip {fahrt_id} has two different time profiles in different schedules")
+                    raise ValueError(
+                        f"Trip fahrt_id={fahrt_id} has differing time profiles between two input XML files. "
+                        f"Existing route={trip_prototypes[fahrt_id].route.name if trip_prototypes[fahrt_id] else None!r}, "  # type: ignore[union-attr]
+                        f"new route={time_profile.route.name if time_profile else None!r}. "
+                        f"Each fahrt_id should appear in at most one Linie's XML; rebuild the input "
+                        f"with a consistent slice."
+                    )
             else:
                 trip_prototypes[fahrt_id] = time_profile
 
@@ -1419,7 +1668,7 @@ def ingest_bvgxml(
     long_route_q = (
         session.query(eflips.model.Route)
         .filter(eflips.model.Route.scenario_id == scenario_id)
-        .filter(eflips.model.Route.distance >= 1e6 * 1000)
+        .filter(eflips.model.Route.distance >= ZERO_DISTANCE_SENTINEL_M)
     )
     for route in long_route_q:
         first_point = route.departure_station.geom
