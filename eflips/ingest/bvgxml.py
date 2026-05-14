@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.legacy.bvgxml import (
     TimeProfile,
+    ZERO_DISTANCE_SENTINEL_M,
     create_routes_and_time_profiles,
     create_stations,
     create_trip_prototypes,
@@ -77,13 +78,15 @@ class BvgxmlIngester(AbstractIngester):
 
         schedules: List[Linienfahrplan] = []
         errors: Dict[str, str] = {}
+        # Reserve the last 5% for the pickle write so the bar doesn't claim 100%
+        # before the file actually exists on disk.
         for i, path in enumerate(xml_paths):
             try:
                 schedules.append(load_and_validate_xml(path))
             except Exception as e:  # noqa: BLE001 — xsdata/lxml can raise various types
                 errors[path.name] = str(e)
             if progress_callback:
-                progress_callback((i + 1) / (len(xml_paths) + 1))
+                progress_callback(0.95 * (i + 1) / len(xml_paths))
 
         if errors:
             shutil.rmtree(target_dir)
@@ -105,11 +108,20 @@ class BvgxmlIngester(AbstractIngester):
         with open(pkl_path, "rb") as fp:
             schedules: List[Linienfahrplan] = pickle.load(fp)
 
+        # Progress is reported as a value in [0, 1]. Each phase below claims a
+        # fixed share of the bar; loops within a phase interpolate inside it so
+        # the bar moves smoothly on long stacks.
         TOTAL_PHASES = 10
 
-        def report(phase: int) -> None:
+        def report(phase: float) -> None:
             if progress_callback:
-                progress_callback(phase / TOTAL_PHASES)
+                progress_callback(min(1.0, phase / TOTAL_PHASES))
+
+        def report_subphase(phase_start: int, i: int, n: int) -> None:
+            # phase_start is the integer phase number this loop completes.
+            # i is 0-indexed within the loop, n is total iterations.
+            if progress_callback and n > 0:
+                progress_callback(min(1.0, (phase_start - 1 + (i + 1) / n) / TOTAL_PHASES))
 
         engine = create_engine(self.database_url)
         with Session(engine) as session:
@@ -127,9 +139,10 @@ class BvgxmlIngester(AbstractIngester):
             scenario_id = scenario.id
             report(1)
 
-            for schedule in schedules:
+            n_schedules = len(schedules)
+            for i, schedule in enumerate(schedules):
                 create_stations(schedule, scenario_id, session)
-            report(2)
+                report_subphase(2, i, n_schedules)
 
             create_route_results: List[
                 Tuple[
@@ -138,32 +151,39 @@ class BvgxmlIngester(AbstractIngester):
                     Dict[int, None | eflips.model.Route],
                 ]
             ] = []
-            for schedule in schedules:
+            for i, schedule in enumerate(schedules):
                 trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
                     schedule, scenario_id, session
                 )
                 create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
-            report(3)
+                report_subphase(3, i, n_schedules)
 
             all_trip_prototypes: List[Dict[int, None | TimeProfile]] = []
-            for schedule, trip_time_profiles, db_routes_by_lfd_nr in create_route_results:
+            for i, (schedule, trip_time_profiles, db_routes_by_lfd_nr) in enumerate(create_route_results):
                 all_trip_prototypes.append(create_trip_prototypes(schedule, trip_time_profiles, db_routes_by_lfd_nr))
+                report_subphase(4, i, n_schedules)
 
             trip_prototypes: Dict[int, None | TimeProfile] = {}
             for the_dict in all_trip_prototypes:
                 for fahrt_id, time_profile in the_dict.items():
                     if fahrt_id in trip_prototypes:
                         if trip_prototypes[fahrt_id] != time_profile:
-                            raise ValueError(f"Trip {fahrt_id} has two different time profiles in different schedules")
+                            existing_tp = trip_prototypes[fahrt_id]
+                            raise ValueError(
+                                f"Trip fahrt_id={fahrt_id} has differing time profiles between two input "
+                                f"XML files. Existing route="
+                                f"{existing_tp.route.name if existing_tp else None!r}, new route="
+                                f"{time_profile.route.name if time_profile else None!r}. Each fahrt_id should "
+                                f"appear in at most one Linie's XML; rebuild the input zip with a consistent slice."
+                            )
                     else:
                         trip_prototypes[fahrt_id] = time_profile
-            report(4)
 
-            for schedule in schedules:
+            for i, schedule in enumerate(schedules):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=ConsistencyWarning)
                     create_trips_and_vehicle_schedules(schedule, trip_prototypes, scenario_id, session)
-            report(5)
+                report_subphase(5, i, n_schedules)
 
             stations_without_geom_q = (
                 session.query(eflips.model.Station)
@@ -180,7 +200,7 @@ class BvgxmlIngester(AbstractIngester):
             long_route_q = (
                 session.query(eflips.model.Route)
                 .filter(eflips.model.Route.scenario_id == scenario_id)
-                .filter(eflips.model.Route.distance >= 1e6 * 1000)
+                .filter(eflips.model.Route.distance >= ZERO_DISTANCE_SENTINEL_M)
             )
             for route in long_route_q:
                 first_point = route.departure_station.geom
