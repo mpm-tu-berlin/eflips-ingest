@@ -232,11 +232,9 @@ def add_or_ret_station_for_grid_point(
         short_name = grid_point.kurzname[0:4]
         if short_name.endswith("0") or short_name.endswith("1"):
             short_name = short_name[0:3]
-        station = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .filter(eflips.model.Station.name_short == short_name)
-            .one_or_none()
+        station = next(
+            (s for s in station_mapping.values() if s.name_short == short_name),
+            None,
         )
         if station is None:
             logger.info(
@@ -251,6 +249,9 @@ def add_or_ret_station_for_grid_point(
                 is_electrified=False,
                 geom=geom,
             )
+            session.add(station)
+            # Negative key avoids collision with Haltestellenbereich numbers
+            station_mapping[-gridpoint_id] = station
 
     elif grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT or grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.APKT:
         typ_tag = "epkt" if grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT else "apkt"
@@ -279,12 +280,9 @@ def add_or_ret_station_for_grid_point(
             )
         long_name = long_name[:-10]
 
-        station = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .filter(eflips.model.Station.name_short == short_name)
-            .filter(eflips.model.Station.name == long_name)
-            .one_or_none()
+        station = next(
+            (s for s in station_mapping.values() if s.name_short == short_name and s.name == long_name),
+            None,
         )
         if station is None:
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
@@ -297,6 +295,7 @@ def add_or_ret_station_for_grid_point(
                 geom=geom,
             )
             session.add(station)
+            station_mapping[-gridpoint_id] = station
     else:
         raise ValueError(
             f"Grid point {gridpoint_id} (kurzname={grid_point.kurzname!r}, langname={grid_point.langname!r}) "
@@ -649,7 +648,9 @@ def create_routes_and_time_profiles(
         for i in range(len(route.punktfolge.punkt)):
             point = route.punktfolge.punkt[i]
             # Load data to be used later
-            station = add_or_ret_station_for_grid_point(scenario_id, point.netzpunkt, grid_points, session, station_mapping)
+            station = add_or_ret_station_for_grid_point(
+                scenario_id, point.netzpunkt, grid_points, session, station_mapping
+            )
             grid_point = grid_points[point.netzpunkt]
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 

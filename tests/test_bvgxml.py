@@ -372,30 +372,18 @@ class TestBvgxmlIngester(BaseIngester):
 
         engine = create_engine(self.database_url)
         with Session(engine) as session:
-            scenario_a = (
-                session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_a).one()
-            )
-            scenario_b = (
-                session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_b).one()
-            )
+            scenario_a = session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_a).one()
+            scenario_b = session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_b).one()
             assert scenario_a.id != scenario_b.id
 
             for scenario in (scenario_a, scenario_b):
                 n_stations = (
-                    session.query(eflips.model.Station)
-                    .filter(eflips.model.Station.scenario_id == scenario.id)
-                    .count()
+                    session.query(eflips.model.Station).filter(eflips.model.Station.scenario_id == scenario.id).count()
                 )
                 n_routes = (
-                    session.query(eflips.model.Route)
-                    .filter(eflips.model.Route.scenario_id == scenario.id)
-                    .count()
+                    session.query(eflips.model.Route).filter(eflips.model.Route.scenario_id == scenario.id).count()
                 )
-                n_trips = (
-                    session.query(eflips.model.Trip)
-                    .filter(eflips.model.Trip.scenario_id == scenario.id)
-                    .count()
-                )
+                n_trips = session.query(eflips.model.Trip).filter(eflips.model.Trip.scenario_id == scenario.id).count()
                 assert n_stations > 0
                 assert n_routes > 0
                 assert n_trips > 0
@@ -431,9 +419,7 @@ class TestBvgxmlIngester(BaseIngester):
         engine = create_engine(self.database_url)
         with Session(engine) as session:
             scenarios = (
-                session.query(eflips.model.Scenario)
-                .filter(eflips.model.Scenario.task_id.in_([uuid_a, uuid_b]))
-                .all()
+                session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id.in_([uuid_a, uuid_b])).all()
             )
             assert len(scenarios) == 2
             assert scenarios[0].id != scenarios[1].id
