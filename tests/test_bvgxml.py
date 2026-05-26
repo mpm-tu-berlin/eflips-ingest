@@ -343,3 +343,92 @@ class TestBvgxmlIngester(BaseIngester):
     def test_ingest_without_prepare_raises(self, ingester) -> None:
         with pytest.raises(ValueError, match="No prepared data found"):
             ingester.ingest(uuid4())
+
+    def test_ingest_twice_same_data_independent_scenarios(self, ingester, single_xml_zip) -> None:
+        """Running the same ingest twice must produce two independent scenarios.
+
+        Ingesters are required to be re-runnable in arbitrary order and any
+        number of times: each invocation should yield a fresh, independent
+        scenario without colliding with rows written by earlier runs. Today the
+        BVG-XML ingester explicitly assigns ``Station.id`` from the upstream
+        ``Haltestellenbereich`` numbers, so the second ingest collides on the
+        Station primary key.
+        """
+        success_a, uuid_a = ingester.prepare(xml_zip_file=single_xml_zip)
+        assert success_a is True
+        assert isinstance(uuid_a, UUID)
+        BvgxmlIngester(self.database_url).ingest(uuid_a)
+
+        success_b, uuid_b = ingester.prepare(xml_zip_file=single_xml_zip)
+        assert success_b is True
+        assert isinstance(uuid_b, UUID)
+        assert uuid_b != uuid_a
+        BvgxmlIngester(self.database_url).ingest(uuid_b)
+
+        engine = create_engine(self.database_url)
+        with Session(engine) as session:
+            scenario_a = (
+                session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_a).one()
+            )
+            scenario_b = (
+                session.query(eflips.model.Scenario).filter(eflips.model.Scenario.task_id == uuid_b).one()
+            )
+            assert scenario_a.id != scenario_b.id
+
+            for scenario in (scenario_a, scenario_b):
+                n_stations = (
+                    session.query(eflips.model.Station)
+                    .filter(eflips.model.Station.scenario_id == scenario.id)
+                    .count()
+                )
+                n_routes = (
+                    session.query(eflips.model.Route)
+                    .filter(eflips.model.Route.scenario_id == scenario.id)
+                    .count()
+                )
+                n_trips = (
+                    session.query(eflips.model.Trip)
+                    .filter(eflips.model.Trip.scenario_id == scenario.id)
+                    .count()
+                )
+                assert n_stations > 0
+                assert n_routes > 0
+                assert n_trips > 0
+
+    def test_ingest_twice_different_data_independent_scenarios(self, ingester, sample_xml_paths, tmp_path) -> None:
+        """Running two different prepared inputs must also yield independent scenarios.
+
+        This is the more realistic operational case: a user ingests the BVG-XML
+        for one timetable slice, then later ingests a different slice. Both
+        scenarios must coexist without ID collisions.
+        """
+        if len(sample_xml_paths) < 2:
+            pytest.skip("need at least two sample XML files for this test")
+
+        zip_a = tmp_path / f"a_{uuid4()}.zip"
+        with ZipFile(zip_a, "w") as zf:
+            zf.write(sample_xml_paths[0], arcname=sample_xml_paths[0].name)
+
+        zip_b = tmp_path / f"b_{uuid4()}.zip"
+        with ZipFile(zip_b, "w") as zf:
+            zf.write(sample_xml_paths[1], arcname=sample_xml_paths[1].name)
+
+        success_a, uuid_a = ingester.prepare(xml_zip_file=zip_a)
+        assert success_a is True
+        assert isinstance(uuid_a, UUID)
+        BvgxmlIngester(self.database_url).ingest(uuid_a)
+
+        success_b, uuid_b = ingester.prepare(xml_zip_file=zip_b)
+        assert success_b is True
+        assert isinstance(uuid_b, UUID)
+        BvgxmlIngester(self.database_url).ingest(uuid_b)
+
+        engine = create_engine(self.database_url)
+        with Session(engine) as session:
+            scenarios = (
+                session.query(eflips.model.Scenario)
+                .filter(eflips.model.Scenario.task_id.in_([uuid_a, uuid_b]))
+                .all()
+            )
+            assert len(scenarios) == 2
+            assert scenarios[0].id != scenarios[1].id
