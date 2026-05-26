@@ -210,6 +210,11 @@ def add_or_ret_station_for_grid_point(
 
     grid_point = grid_points[gridpoint_id]
     if grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.HST:
+        if grid_point.haltestellenbereich is None:
+            raise ValueError(
+                f"Station for grid point {gridpoint_id} (Hst, kurzname={grid_point.kurzname!r}) "
+                f"has no haltestellenbereich set."
+            )
         station = station_mapping.get(grid_point.haltestellenbereich)
         if station is None:
             raise ValueError(
