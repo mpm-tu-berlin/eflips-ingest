@@ -140,8 +140,9 @@ class BvgxmlIngester(AbstractIngester):
             report(1)
 
             n_schedules = len(schedules)
+            station_mapping: Dict[int, eflips.model.Station] = {}
             for i, schedule in enumerate(schedules):
-                create_stations(schedule, scenario_id, session)
+                create_stations(schedule, scenario_id, session, station_mapping)
                 report_subphase(2, i, n_schedules)
 
             create_route_results: List[
@@ -153,7 +154,7 @@ class BvgxmlIngester(AbstractIngester):
             ] = []
             for i, schedule in enumerate(schedules):
                 trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
-                    schedule, scenario_id, session
+                    schedule, scenario_id, session, station_mapping
                 )
                 create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
                 report_subphase(3, i, n_schedules)

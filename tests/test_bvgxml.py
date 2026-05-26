@@ -81,7 +81,8 @@ class TestBVGXML:
             session.flush()  # flush to get the id
             scenario_id = scenario.id
 
-            create_stations(linienfahrplan, scenario_id, session)
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
 
             all_stations = session.query(eflips.model.Station).all()
             assert len(all_stations) > 0
@@ -104,8 +105,9 @@ class TestBVGXML:
             session.flush()
             scenario_id = scenario.id
 
-            create_stations(linienfahrplan, scenario_id, session)
-            create_routes_and_time_profiles(linienfahrplan, scenario_id, session)
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
+            create_routes_and_time_profiles(linienfahrplan, scenario_id, session, station_mapping)
 
             all_routes = session.query(eflips.model.Route).all()
             assert len(all_routes) > 0
@@ -132,9 +134,10 @@ class TestBVGXML:
             session.flush()
             scenario_id = scenario.id
 
-            create_stations(linienfahrplan, scenario_id, session)
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
             trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
-                linienfahrplan, scenario_id, session
+                linienfahrplan, scenario_id, session, station_mapping
             )
             trips_by_id: Dict[int, TimeProfile] = create_trip_prototypes(
                 linienfahrplan, trip_time_profiles, db_routes_by_lfd_nr
@@ -158,9 +161,10 @@ class TestBVGXML:
             session.flush()
             scenario_id = scenario.id
 
-            create_stations(linienfahrplan, scenario_id, session)
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
             trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
-                linienfahrplan, scenario_id, session
+                linienfahrplan, scenario_id, session, station_mapping
             )
             trips_by_id: Dict[int, TimeProfile] = create_trip_prototypes(
                 linienfahrplan, trip_time_profiles, db_routes_by_lfd_nr
@@ -210,8 +214,9 @@ class TestBVGXML:
             session.flush()
             scenario_id = scenario.id
 
-            create_stations(linienfahrplan, scenario_id, session)
-            create_routes_and_time_profiles(linienfahrplan, scenario_id, session)
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
+            create_routes_and_time_profiles(linienfahrplan, scenario_id, session, station_mapping)
             session.flush()
 
             # Load a station with as
