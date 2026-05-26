@@ -36,16 +36,19 @@ This repository contains code to import bus schedules from various sources into 
 
 ## Usage
 
-### Command line
+The code is organized as a set of ingester packages under `eflips/ingest/`, each
+covering a specific data source. Use them via the API described below.
+Supported sources:
 
-The code is organized into various Python files under the `eflips/ingest` folder, each for ingesting a specific data source. These files should be runnable using `python eflips/ingest/x.py` The following data sources are currently supported:
-
-- `bvgxml.py`: XML files emitted by BVG's proprietary software. 
+- `eflips.ingest.bvgxml.BvgxmlIngester`: XML files emitted by BVG's proprietary software.
   - Requires at least `GOOGLE_MAPS_API_KEY`, also `OPENELEVATION_URL` is suggested to save money on Google Maps API calls.
   - Known Limitations:
     - The source data is known to contain some partial rotations of the bus routes. These are imported, which may lead to errors when creating a depot for each start and end spot, as some roations start/end at spots that are not depots.
     - Some routes that are going from the same stop to the stop itself are not imported, as they are considered to be invalid.
     - Some route's distance and time is fudged, when it is found to be unrealistically short or long.
+- `eflips.ingest.vdv.VdvIngester`: VDV 451/452 archives.
+- `eflips.ingest.gtfs.GtfsIngester`: GTFS feeds.
+
 ### API
 
 ---

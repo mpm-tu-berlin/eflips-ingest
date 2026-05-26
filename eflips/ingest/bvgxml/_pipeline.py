@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
 """
-Legacy core of the BVG-XML ingester.
+Pipeline helpers for the BVG-XML ingester.
 
-The public entry point is :func:`ingest_bvgxml` (used by the CLI), but the
-helpers in this module are also re-used by :class:`eflips.ingest.bvgxml.BvgxmlIngester`.
+The public class :class:`eflips.ingest.bvgxml.BvgxmlIngester` orchestrates these
+helpers; this module holds the per-stage logic.
 
 The pipeline runs in this order:
 
 1. :func:`load_and_validate_xml` parses one ``Linienfahrplan`` XML file and
-   validates it against ``data/bvg_xml.xsd``.
+   validates it against the in-package ``bvg_xml.xsd`` schema.
 2. :func:`create_stations` writes ``Haltestellenbereich`` entries (Hst-type
    stations) directly.
 3. :func:`create_routes_and_time_profiles` walks each route's Punktfolge,
@@ -41,21 +40,17 @@ deployment surfaces a new edge case:
 - :data:`POINTLESS_ROUTE_SIGNATURES` — routes to drop when they collapse
   to a single station.
 """
-import glob
 import logging
 import os
-import socket
 import sqlite3
 import statistics
 import warnings
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from multiprocessing import Pool
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 
-import fire  # type: ignore
 import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from eflips.model import create_engine
@@ -70,7 +65,7 @@ from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.model
 
-from eflips.ingest.legacy.xmldata import (
+from eflips.ingest.bvgxml._xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
@@ -102,7 +97,7 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     xml_string = xml_string.replace("ns2:", "")
     xml_string = xml_string.replace(":ns2", "")
 
-    xsd_path = Path(__file__).parent.parent / "data" / "bvg_xml.xsd"
+    xsd_path = Path(__file__).parent / "bvg_xml.xsd"
     xmlschema_doc = etree.parse(xsd_path)
     xmlschema = etree.XMLSchema(xmlschema_doc)
 
@@ -117,42 +112,53 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     return data
 
 
-def add_or_ret_station(scenario_id: int, id: int, name: str, name_short: str, session: Session) -> eflips.model.Station:
+def add_or_ret_station(
+    scenario_id: int,
+    upstream_id: int,
+    name: str,
+    name_short: str,
+    session: Session,
+    station_mapping: Dict[int, eflips.model.Station],
+) -> eflips.model.Station:
     """
-    For a given station ID, adds a station to the database if it does not exist yet, and returns the station object.
+    For a given upstream Haltestellenbereich number, adds a station to the database if it does not exist yet, and
+    returns the station object. The station is also registered in *station_mapping* so that downstream code can
+    resolve the upstream number back to the ORM object without relying on an explicit primary-key assignment.
 
     :param scenario_id: The scenario ID to use
-    :param id: The station ID to use
+    :param upstream_id: The Haltestellenbereich number from the XML (used as mapping key, NOT as Station.id)
     :param name: The long name of the station
     :param name_short: The short name of the station
     :param session: An open database session
-    :return: A station object, connected to the database it will not have a geometry yet
+    :param station_mapping: Mutable mapping of upstream Haltestellenbereich number → Station object
+    :return: A station object, connected to the database; it will not have a geometry yet
     """
 
-    station = (
-        session.query(eflips.model.Station)
-        .filter(eflips.model.Station.scenario_id == scenario_id)
-        .filter(eflips.model.Station.id == id)
-        .one_or_none()
-    )
+    if upstream_id in station_mapping:
+        return station_mapping[upstream_id]
+
     if geometry_has_z():
         dummy_geom = from_shape(Point(0.0, 0.0, 0.0), srid=4326)  # Will be set later
     else:
         dummy_geom = from_shape(Point(0.0, 0.0), srid=4326)  # Will be set later
-    if station is None:
-        station = eflips.model.Station(
-            scenario_id=scenario_id,
-            id=id,
-            name=name,
-            name_short=name_short,
-            is_electrified=False,
-            geom=dummy_geom,  # Will be set later
-        )
-        session.add(station)
+    station = eflips.model.Station(
+        scenario_id=scenario_id,
+        name=name,
+        name_short=name_short,
+        is_electrified=False,
+        geom=dummy_geom,  # Will be set later
+    )
+    session.add(station)
+    station_mapping[upstream_id] = station
     return station
 
 
-def create_stations(linienfahrplan: Linienfahrplan, scenario_id: int, session: Session) -> None:
+def create_stations(
+    linienfahrplan: Linienfahrplan,
+    scenario_id: int,
+    session: Session,
+    station_mapping: Dict[int, eflips.model.Station],
+) -> None:
     """
     First method to be used when importing a set of xml files. It takes the parsed xml data and creates the stations
     from the 'Linienfahrplan/StreckennetzDaten/Haltestellenbereiche/Haltestellenbereich' entries.
@@ -160,6 +166,7 @@ def create_stations(linienfahrplan: Linienfahrplan, scenario_id: int, session: S
     :param linienfahrplan: A parsed Linienfahrplan object
     :param scenario_id: The scenario ID to use
     :param session: An open database session
+    :param station_mapping: Mutable mapping of upstream Haltestellenbereich number → Station object, populated in place
     :return: Nothing - the stations are added to the database
     """
     logger = logging.getLogger(__name__)
@@ -169,7 +176,7 @@ def create_stations(linienfahrplan: Linienfahrplan, scenario_id: int, session: S
         short_name = haltestellenbereich.kurzname
         long_name = haltestellenbereich.fahrplanbuchname
 
-        add_or_ret_station(scenario_id, id_no, long_name, short_name, session)
+        add_or_ret_station(scenario_id, id_no, long_name, short_name, session, station_mapping)
 
 
 def add_or_ret_line(scenario_id: int, name: str, session: Session) -> eflips.model.Line:
@@ -190,24 +197,26 @@ def add_or_ret_station_for_grid_point(
     gridpoint_id: int,
     grid_points: Dict[int, Linienfahrplan.StreckennetzDaten.Netzpunkte.Netzpunkt],
     session: Session,
+    station_mapping: Dict[int, eflips.model.Station],
 ) -> eflips.model.Station:
     """
     Sets up the station object for a given grid point. If it is if the `Netzpunkttyp` "Hst", returns the station.
-    Otherwise, check if a station already exists for the grid point (by short name). If not, create a new station
+    Otherwise, check if a station already exists for the grid point (by short name). If not, create a new station.
+
+    *station_mapping* is the upstream Haltestellenbereich-number → Station dict built by :func:`create_stations`.
     """
 
     logger = logging.getLogger(__name__)
 
     grid_point = grid_points[gridpoint_id]
     if grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.HST:
-        station = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .filter(eflips.model.Station.id == grid_point.haltestellenbereich)
-            .one_or_none()
-        )
+        if grid_point.haltestellenbereich is None:
+            raise ValueError(
+                f"Station for grid point {gridpoint_id} (Hst, kurzname={grid_point.kurzname!r}) "
+                f"has no haltestellenbereich set."
+            )
+        station = station_mapping.get(grid_point.haltestellenbereich)
         if station is None:
-            # The station should have already been created in the previous step
             raise ValueError(
                 f"Station for grid point {gridpoint_id} (Hst, kurzname={grid_point.kurzname!r}, "
                 f"haltestellenbereich={grid_point.haltestellenbereich}) not found; "
@@ -217,14 +226,8 @@ def add_or_ret_station_for_grid_point(
         # Preferred: the XML now optionally exposes Netzpunkt.haltestellenbereich
         # as a direct FK to the Haltestellenbereich (the parent Hst-like station).
         # Use it when present so we never have to guess from the kurzname prefix.
-        station = None
         if grid_point.haltestellenbereich is not None:
-            station = (
-                session.query(eflips.model.Station)
-                .filter(eflips.model.Station.scenario_id == scenario_id)
-                .filter(eflips.model.Station.id == grid_point.haltestellenbereich)
-                .one_or_none()
-            )
+            station = station_mapping.get(grid_point.haltestellenbereich)
             if station is not None:
                 return station
 
@@ -234,44 +237,32 @@ def add_or_ret_station_for_grid_point(
         short_name = grid_point.kurzname[0:4]
         if short_name.endswith("0") or short_name.endswith("1"):
             short_name = short_name[0:3]
-        station = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .filter(eflips.model.Station.name_short == short_name)
-            .one_or_none()
+        station = next(
+            (s for s in station_mapping.values() if s.name_short == short_name),
+            None,
         )
         if station is None:
             logger.info(
                 f"Station for grid point {gridpoint_id} not found, even though it is of type 'BPUNKT' and should have a station"
             )
-            # Here, we can actually calculate the coordinates already
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
-            # The ID we need to give it must not collide with the IDs of the other stations
-            # So we give it 1 billion plus the gridpoint ID
-
             station = eflips.model.Station(
-                id=1_000_000_000 + gridpoint_id,
                 scenario_id=scenario_id,
                 name=f"BPUNKT {grid_point.langname}",
                 name_short=short_name,
                 is_electrified=False,
                 geom=geom,
             )
+            session.add(station)
+            # Negative key avoids collision with Haltestellenbereich numbers
+            station_mapping[-gridpoint_id] = station
 
-            # raise ValueError(
-            #    f"Station for grid point {gridpoint_id} not found, even though it is of type 'BPUNKT' and should have a station"
-            # )
     elif grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT or grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.APKT:
         typ_tag = "epkt" if grid_point.netzpunkttyp == NetzpunktNetzpunkttyp.EPKT else "apkt"
         # Preferred: explicit Haltestellenbereich FK.
         if grid_point.haltestellenbereich is not None:
-            via_hb = (
-                session.query(eflips.model.Station)
-                .filter(eflips.model.Station.scenario_id == scenario_id)
-                .filter(eflips.model.Station.id == grid_point.haltestellenbereich)
-                .one_or_none()
-            )
+            via_hb = station_mapping.get(grid_point.haltestellenbereich)
             if via_hb is not None:
                 return via_hb
 
@@ -294,26 +285,22 @@ def add_or_ret_station_for_grid_point(
             )
         long_name = long_name[:-10]
 
-        station = (
-            session.query(eflips.model.Station)
-            .filter(eflips.model.Station.scenario_id == scenario_id)
-            .filter(eflips.model.Station.name_short == short_name)
-            .filter(eflips.model.Station.name == long_name)
-            .one_or_none()
+        station = next(
+            (s for s in station_mapping.values() if s.name_short == short_name and s.name == long_name),
+            None,
         )
         if station is None:
-            # Here, we can actually calculate the coordinates already
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
             station = eflips.model.Station(
                 scenario_id=scenario_id,
-                id=gridpoint_id,
                 name=long_name,
                 name_short=short_name,
                 is_electrified=False,
                 geom=geom,
             )
             session.add(station)
+            station_mapping[-gridpoint_id] = station
     else:
         raise ValueError(
             f"Grid point {gridpoint_id} (kurzname={grid_point.kurzname!r}, langname={grid_point.langname!r}) "
@@ -610,7 +597,10 @@ def fix_times(points: List[TimeProfile.TimeProfilePoint]) -> List[TimeProfile.Ti
 
 
 def create_routes_and_time_profiles(
-    schedule: Linienfahrplan, scenario_id: int, session: Session
+    schedule: Linienfahrplan,
+    scenario_id: int,
+    session: Session,
+    station_mapping: Dict[int, eflips.model.Station],
 ) -> Tuple[Dict[int, Dict[int, List[TimeProfile.TimeProfilePoint]]], Dict[int, None | eflips.model.Route]]:
     """
     First method to be used when importing a set of xml files. It takes the parsed xml data and creates the stations
@@ -663,7 +653,9 @@ def create_routes_and_time_profiles(
         for i in range(len(route.punktfolge.punkt)):
             point = route.punktfolge.punkt[i]
             # Load data to be used later
-            station = add_or_ret_station_for_grid_point(scenario_id, point.netzpunkt, grid_points, session)
+            station = add_or_ret_station_for_grid_point(
+                scenario_id, point.netzpunkt, grid_points, session, station_mapping
+            )
             grid_point = grid_points[point.netzpunkt]
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
@@ -1545,198 +1537,3 @@ def identify_and_delete_overlapping_rotations(scenario_id: int, session: Session
                     session.delete(trip)
                 session.delete(rotation)
                 break
-
-
-def ingest_bvgxml(
-    paths: Union[str, List[str]],
-    database_url: str,
-    clear_database: bool = False,
-    multithreading: bool = True,
-    log_level: str = "WARNING",
-) -> None:
-    """
-    The main method for ingesting BVG-XML format files into the database.
-
-    :param paths: Either a directory or a list of files to ingest
-    :param database_url: The database URL to use for the ingestion
-    :param clear_database: Whether to clear the database and create a new schema before ingesting
-    :param multithreading: Whether to use multithreading or not. Useful to disable for debugging
-    :return:
-    """
-
-    match log_level:
-        case "DEBUG":
-            logging.basicConfig(level=logging.DEBUG)
-        case "INFO":
-            logging.basicConfig(level=logging.INFO)
-        case "WARNING":
-            logging.basicConfig(level=logging.WARNING)
-        case "ERROR":
-            logging.basicConfig(level=logging.ERROR)
-        case "CRITICAL":
-            logging.basicConfig(level=logging.CRITICAL)
-        case _:
-            raise ValueError("Invalid log level. Must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
-
-    logger = logging.getLogger(__name__)
-
-    if isinstance(paths, str):
-        if os.path.isdir(paths):
-            # Find all xml files in the directory
-            paths = glob.glob(os.path.join(paths, "*.xml"))
-        else:
-            paths = [paths]
-    paths_pathlike = [Path(p) for p in paths]
-
-    TOTAL_STEPS = 11
-
-    ### STEP 1: Load the XML files into memory
-    # First, we go through all the files and load them into memory
-    if multithreading:
-        with Pool() as pool:
-            schedules = pool.map(load_and_validate_xml, paths_pathlike)
-    else:
-        schedules = []
-        for path in paths_pathlike:
-            schedules.append(load_and_validate_xml(path))
-
-    ### STEP 1.5: Create the database session and scenario
-    engine = create_engine(database_url)
-    if clear_database:
-        eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.setup_database(engine)
-    session = Session(engine)
-    scenario = eflips.model.Scenario(
-        name=f"Created by BVG-XML Ingestion on {socket.gethostname()} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    session.add(scenario)
-    session.flush()
-    scenario_id = scenario.id
-
-    ### STEP 2: Create the stations
-    # Now, we go through the schedules and create the stations
-    # No multithreading, because that would just create duplicate stations
-    for schedule in schedules:
-        create_stations(schedule, scenario_id, session)
-
-    ### STEP 3: Create the routes and save some data for later
-    # Again no multithreading
-    create_route_results: List[
-        Tuple[
-            Linienfahrplan,
-            Dict[int, Dict[int, List[TimeProfile.TimeProfilePoint]]],
-            Dict[int, None | eflips.model.Route],
-        ]
-    ] = []
-    for schedule in schedules:
-        trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(schedule, scenario_id, session)
-        create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
-
-    ### STEP 4: Create the trip prototypes
-    # This can be done in parallel, but we don't need to do it, it's fast enough
-    all_trip_protoypes: List[Dict[int, None | TimeProfile]] = []
-    for create_route_result in create_route_results:
-        trip_prototypes = create_trip_prototypes(create_route_result[0], create_route_result[1], create_route_result[2])
-        all_trip_protoypes.append(trip_prototypes)
-
-    # Unify the dictionaries, making sure the contents are the same if there is a duplicate key
-    trip_prototypes = {}
-    for the_dict in all_trip_protoypes:
-        for fahrt_id, time_profile in the_dict.items():
-            if fahrt_id in trip_prototypes:
-                if trip_prototypes[fahrt_id] != time_profile:
-                    raise ValueError(
-                        f"Trip fahrt_id={fahrt_id} has differing time profiles between two input XML files. "
-                        f"Existing route={trip_prototypes[fahrt_id].route.name if trip_prototypes[fahrt_id] else None!r}, "  # type: ignore[union-attr]
-                        f"new route={time_profile.route.name if time_profile else None!r}. "
-                        f"Each fahrt_id should appear in at most one Linie's XML; rebuild the input "
-                        f"with a consistent slice."
-                    )
-            else:
-                trip_prototypes[fahrt_id] = time_profile
-
-    ### STEP 5: Create the trips and vehicle schedules
-    for schedule in schedules:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=ConsistencyWarning)
-            create_trips_and_vehicle_schedules(schedule, trip_prototypes, scenario_id, session)
-
-    ### STEP 6: Set the geom of the stations
-    # No multithreading, because it should be fast enough
-    stations_without_geom_q = (
-        session.query(eflips.model.Station)
-        .join(eflips.model.AssocRouteStation)
-        .filter(eflips.model.Station.scenario_id == scenario_id)
-        .distinct(eflips.model.Station.id)
-    )
-    for station in stations_without_geom_q:
-        # Get the median of the assoc_route_stations
-        recenter_station(station, session)
-
-    # Flush the session to convert the geoms from string to binary
-    session.flush()
-    session.expire_all()
-
-    ### STEP 7: Fix the routes with very large distances:
-    # There are some routes which have a distance of zero even once the last point is reached
-    # We set their distance to a very large number. Now we set it to the geometric distance between the first and last
-    # point
-    long_route_q = (
-        session.query(eflips.model.Route)
-        .filter(eflips.model.Route.scenario_id == scenario_id)
-        .filter(eflips.model.Route.distance >= ZERO_DISTANCE_SENTINEL_M)
-    )
-    for route in long_route_q:
-        first_point = route.departure_station.geom
-        last_point = route.arrival_station.geom
-
-        first_point_soldner = func.ST_Transform(first_point, 3068)
-        last_point_soldner = func.ST_Transform(last_point, 3068)
-        dist_q = ST_Distance(first_point_soldner, last_point_soldner)
-
-        dist = session.query(dist_q).one()[0]
-
-        with session.no_autoflush:
-            route.distance = dist
-            route.assoc_route_stations[-1].elapsed_distance = dist
-        route.name = "CHECK DISTANCE: " + route.name
-
-    session.flush()
-    session.expire_all()
-
-    # STEP 8: Merge identical stations
-    print(f"(8/{TOTAL_STEPS}) Merging identical stations")
-    merge_identical_stations(scenario_id, session)
-
-    session.flush()
-    session.expire_all()
-
-    # STEP 9: Combine rotations with the same name
-    print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
-    merge_identical_rotations(scenario_id, session)
-
-    # STEP 10: Identify overlapping rotations
-    print(f"(10/{TOTAL_STEPS}) Identifying and deleting overlapping rotations")
-    identify_and_delete_overlapping_rotations(scenario_id, session)
-
-    # Commit and close this session
-    session.commit()
-    session.close()
-
-    # STEP 11: Fix the max sequence numbers
-    print(f"(11/{TOTAL_STEPS}) Fixing max sequence numbers")
-    fix_max_sequence(database_url)
-
-    print(
-        """
-    The import is complete. You may still want to:
-    - Remove some rotations that are not relevant
-    - Merge the vehicle types into three major types
-    - Figure out what happens with the rotations at the very end of the schedule. There seem to be some borked
-      ones there.
-    """
-    )
-
-
-if __name__ == "__main__":
-    fire.Fire(ingest_bvgxml)
