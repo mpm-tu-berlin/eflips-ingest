@@ -1,14 +1,13 @@
-#!/usr/bin/env python3
 """
-Legacy core of the BVG-XML ingester.
+Pipeline helpers for the BVG-XML ingester.
 
-The public entry point is :func:`ingest_bvgxml` (used by the CLI), but the
-helpers in this module are also re-used by :class:`eflips.ingest.bvgxml.BvgxmlIngester`.
+The public class :class:`eflips.ingest.bvgxml.BvgxmlIngester` orchestrates these
+helpers; this module holds the per-stage logic.
 
 The pipeline runs in this order:
 
 1. :func:`load_and_validate_xml` parses one ``Linienfahrplan`` XML file and
-   validates it against ``data/bvg_xml.xsd``.
+   validates it against the in-package ``bvg_xml.xsd`` schema.
 2. :func:`create_stations` writes ``Haltestellenbereich`` entries (Hst-type
    stations) directly.
 3. :func:`create_routes_and_time_profiles` walks each route's Punktfolge,
@@ -41,21 +40,17 @@ deployment surfaces a new edge case:
 - :data:`POINTLESS_ROUTE_SIGNATURES` — routes to drop when they collapse
   to a single station.
 """
-import glob
 import logging
 import os
-import socket
 import sqlite3
 import statistics
 import warnings
 import zoneinfo
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from multiprocessing import Pool
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 
-import fire  # type: ignore
 import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
 from eflips.model import create_engine
@@ -70,7 +65,7 @@ from xsdata.formats.dataclass.parsers import XmlParser
 
 import eflips.model
 
-from eflips.ingest.legacy.xmldata import (
+from eflips.ingest.bvgxml._xmldata import (
     Linienfahrplan,
     NetzpunktNetzpunkttyp,
 )
@@ -102,7 +97,7 @@ def load_and_validate_xml(filename: Path) -> Linienfahrplan:
     xml_string = xml_string.replace("ns2:", "")
     xml_string = xml_string.replace(":ns2", "")
 
-    xsd_path = Path(__file__).parent.parent / "data" / "bvg_xml.xsd"
+    xsd_path = Path(__file__).parent / "bvg_xml.xsd"
     xmlschema_doc = etree.parse(xsd_path)
     xmlschema = etree.XMLSchema(xmlschema_doc)
 
@@ -1545,198 +1540,3 @@ def identify_and_delete_overlapping_rotations(scenario_id: int, session: Session
                     session.delete(trip)
                 session.delete(rotation)
                 break
-
-
-def ingest_bvgxml(
-    paths: Union[str, List[str]],
-    database_url: str,
-    clear_database: bool = False,
-    multithreading: bool = True,
-    log_level: str = "WARNING",
-) -> None:
-    """
-    The main method for ingesting BVG-XML format files into the database.
-
-    :param paths: Either a directory or a list of files to ingest
-    :param database_url: The database URL to use for the ingestion
-    :param clear_database: Whether to clear the database and create a new schema before ingesting
-    :param multithreading: Whether to use multithreading or not. Useful to disable for debugging
-    :return:
-    """
-
-    match log_level:
-        case "DEBUG":
-            logging.basicConfig(level=logging.DEBUG)
-        case "INFO":
-            logging.basicConfig(level=logging.INFO)
-        case "WARNING":
-            logging.basicConfig(level=logging.WARNING)
-        case "ERROR":
-            logging.basicConfig(level=logging.ERROR)
-        case "CRITICAL":
-            logging.basicConfig(level=logging.CRITICAL)
-        case _:
-            raise ValueError("Invalid log level. Must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
-
-    logger = logging.getLogger(__name__)
-
-    if isinstance(paths, str):
-        if os.path.isdir(paths):
-            # Find all xml files in the directory
-            paths = glob.glob(os.path.join(paths, "*.xml"))
-        else:
-            paths = [paths]
-    paths_pathlike = [Path(p) for p in paths]
-
-    TOTAL_STEPS = 11
-
-    ### STEP 1: Load the XML files into memory
-    # First, we go through all the files and load them into memory
-    if multithreading:
-        with Pool() as pool:
-            schedules = pool.map(load_and_validate_xml, paths_pathlike)
-    else:
-        schedules = []
-        for path in paths_pathlike:
-            schedules.append(load_and_validate_xml(path))
-
-    ### STEP 1.5: Create the database session and scenario
-    engine = create_engine(database_url)
-    if clear_database:
-        eflips.model.Base.metadata.drop_all(engine)
-        eflips.model.setup_database(engine)
-    session = Session(engine)
-    scenario = eflips.model.Scenario(
-        name=f"Created by BVG-XML Ingestion on {socket.gethostname()} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
-    session.add(scenario)
-    session.flush()
-    scenario_id = scenario.id
-
-    ### STEP 2: Create the stations
-    # Now, we go through the schedules and create the stations
-    # No multithreading, because that would just create duplicate stations
-    for schedule in schedules:
-        create_stations(schedule, scenario_id, session)
-
-    ### STEP 3: Create the routes and save some data for later
-    # Again no multithreading
-    create_route_results: List[
-        Tuple[
-            Linienfahrplan,
-            Dict[int, Dict[int, List[TimeProfile.TimeProfilePoint]]],
-            Dict[int, None | eflips.model.Route],
-        ]
-    ] = []
-    for schedule in schedules:
-        trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(schedule, scenario_id, session)
-        create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
-
-    ### STEP 4: Create the trip prototypes
-    # This can be done in parallel, but we don't need to do it, it's fast enough
-    all_trip_protoypes: List[Dict[int, None | TimeProfile]] = []
-    for create_route_result in create_route_results:
-        trip_prototypes = create_trip_prototypes(create_route_result[0], create_route_result[1], create_route_result[2])
-        all_trip_protoypes.append(trip_prototypes)
-
-    # Unify the dictionaries, making sure the contents are the same if there is a duplicate key
-    trip_prototypes = {}
-    for the_dict in all_trip_protoypes:
-        for fahrt_id, time_profile in the_dict.items():
-            if fahrt_id in trip_prototypes:
-                if trip_prototypes[fahrt_id] != time_profile:
-                    raise ValueError(
-                        f"Trip fahrt_id={fahrt_id} has differing time profiles between two input XML files. "
-                        f"Existing route={trip_prototypes[fahrt_id].route.name if trip_prototypes[fahrt_id] else None!r}, "  # type: ignore[union-attr]
-                        f"new route={time_profile.route.name if time_profile else None!r}. "
-                        f"Each fahrt_id should appear in at most one Linie's XML; rebuild the input "
-                        f"with a consistent slice."
-                    )
-            else:
-                trip_prototypes[fahrt_id] = time_profile
-
-    ### STEP 5: Create the trips and vehicle schedules
-    for schedule in schedules:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=ConsistencyWarning)
-            create_trips_and_vehicle_schedules(schedule, trip_prototypes, scenario_id, session)
-
-    ### STEP 6: Set the geom of the stations
-    # No multithreading, because it should be fast enough
-    stations_without_geom_q = (
-        session.query(eflips.model.Station)
-        .join(eflips.model.AssocRouteStation)
-        .filter(eflips.model.Station.scenario_id == scenario_id)
-        .distinct(eflips.model.Station.id)
-    )
-    for station in stations_without_geom_q:
-        # Get the median of the assoc_route_stations
-        recenter_station(station, session)
-
-    # Flush the session to convert the geoms from string to binary
-    session.flush()
-    session.expire_all()
-
-    ### STEP 7: Fix the routes with very large distances:
-    # There are some routes which have a distance of zero even once the last point is reached
-    # We set their distance to a very large number. Now we set it to the geometric distance between the first and last
-    # point
-    long_route_q = (
-        session.query(eflips.model.Route)
-        .filter(eflips.model.Route.scenario_id == scenario_id)
-        .filter(eflips.model.Route.distance >= ZERO_DISTANCE_SENTINEL_M)
-    )
-    for route in long_route_q:
-        first_point = route.departure_station.geom
-        last_point = route.arrival_station.geom
-
-        first_point_soldner = func.ST_Transform(first_point, 3068)
-        last_point_soldner = func.ST_Transform(last_point, 3068)
-        dist_q = ST_Distance(first_point_soldner, last_point_soldner)
-
-        dist = session.query(dist_q).one()[0]
-
-        with session.no_autoflush:
-            route.distance = dist
-            route.assoc_route_stations[-1].elapsed_distance = dist
-        route.name = "CHECK DISTANCE: " + route.name
-
-    session.flush()
-    session.expire_all()
-
-    # STEP 8: Merge identical stations
-    print(f"(8/{TOTAL_STEPS}) Merging identical stations")
-    merge_identical_stations(scenario_id, session)
-
-    session.flush()
-    session.expire_all()
-
-    # STEP 9: Combine rotations with the same name
-    print(f"(9/{TOTAL_STEPS}) Merging identical rotations")
-    merge_identical_rotations(scenario_id, session)
-
-    # STEP 10: Identify overlapping rotations
-    print(f"(10/{TOTAL_STEPS}) Identifying and deleting overlapping rotations")
-    identify_and_delete_overlapping_rotations(scenario_id, session)
-
-    # Commit and close this session
-    session.commit()
-    session.close()
-
-    # STEP 11: Fix the max sequence numbers
-    print(f"(11/{TOTAL_STEPS}) Fixing max sequence numbers")
-    fix_max_sequence(database_url)
-
-    print(
-        """
-    The import is complete. You may still want to:
-    - Remove some rotations that are not relevant
-    - Merge the vehicle types into three major types
-    - Figure out what happens with the rotations at the very end of the schedule. There seem to be some borked
-      ones there.
-    """
-    )
-
-
-if __name__ == "__main__":
-    fire.Fire(ingest_bvgxml)

@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 from eflips.ingest.base import AbstractIngester
-from eflips.ingest.vdv452data import (
+from eflips.ingest.vdv._xmldata import (
     VdvBaseObject,
     BasisVerGueltigkeit,
     Firmenkalender,

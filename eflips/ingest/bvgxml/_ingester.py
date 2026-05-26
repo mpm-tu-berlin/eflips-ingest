@@ -17,7 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
-from eflips.ingest.legacy.bvgxml import (
+from eflips.ingest.bvgxml._pipeline import (
     TimeProfile,
     ZERO_DISTANCE_SENTINEL_M,
     create_routes_and_time_profiles,
@@ -31,7 +31,7 @@ from eflips.ingest.legacy.bvgxml import (
     merge_identical_stations,
     recenter_station,
 )
-from eflips.ingest.legacy.xmldata import Linienfahrplan
+from eflips.ingest.bvgxml._xmldata import Linienfahrplan
 
 
 class BvgxmlIngester(AbstractIngester):
@@ -42,7 +42,7 @@ class BvgxmlIngester(AbstractIngester):
     :class:`Linienfahrplan` and validates it against the bundled ``bvg_xml.xsd`` schema. The parsed
     schedules are pickled under :meth:`path_for_uuid` for later use.
 
-    ``ingest()`` re-uses the legacy helpers in :mod:`eflips.ingest.legacy.bvgxml` to write stations,
+    ``ingest()`` re-uses the helpers in :mod:`eflips.ingest.bvgxml._pipeline` to write stations,
     routes, trips and rotations into the database, then runs the post-processing fix-ups (geometry
     recentring, identical-station/rotation merging, overlapping-rotation deletion, sequence reset).
     """
