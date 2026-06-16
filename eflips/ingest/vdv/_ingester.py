@@ -101,11 +101,13 @@ class VdvRequiredTables:
     # REC_FRT: brauchen wir für die Zuordnung Fahrt->Umlauf. In der Tabelle findet die Zuordnung der Fahrt zur Linie und Tagesart.
     # REC_UMLAUF: Hier sind die eigentlichen Umläufe beschrieben
 
-    # nicht ganz klar / Kontextabhängig:
-    # Haltezeiten: ggfs. entweder-oder aus:
-    #   a) ORT_HZTF: Haltezeiten je Fahrzeitgruppe und Ort/Haltestelle.
-    #   b) REC_FRT_HZT: Haltezeiten je Fahrt. Also spezifischer als ORT_HZTF. Mir ist unklar, was passiert, falls beide vorhanden sind. Finde ich nichts in der Doku. Würde dann immer das hier genommen?
-    #   c) oder auf 0 falls nicht existent?
+    # Haltezeiten: mindestens eine der beiden Tabellen muss vorhanden sein, beide
+    # sind erlaubt (echte IVU.plan-Exporte liefern in der Regel beide):
+    #   a) ORT_HZTF: Default-Haltezeit je (Fahrzeitgruppe, Ort).
+    #   b) REC_FRT_HZT: per-Fahrt Override. FRT_HZT_ZEIT == 0 wird als "kein
+    #      Override" interpretiert, damit der ORT_HZTF-Default greift; ein
+    #      Wert > 0 setzt sich gegen den Default durch. Fehlt beides, fällt
+    #      die Haltezeit auf 0s zurück.
     # Überläuferfahrten (VDV 452 Kap. 9.8.2 bzw. S. 65 bei "Erläuterung zur Fahrzeugumlaufbildung aus den Fahrten", demnach ist es kontextabhängig ob die folgenden Tabellen nötig sind):
     #   a) REC_UEB: Länge der Fahrt zwischen zwei Orten - bei Überläuferfahrt (Betriebshofaus- und -einfahrt, Zufahrten)
     #   b) UEB_FZT: Fahrzeiten bei Überläuferfahrten
@@ -449,9 +451,6 @@ class VdvIngester(AbstractIngester):
                 else:
                     rec_frt_hzts = []
 
-                # It only makes sense to have one of the two
-                assert bool(len(rec_frt_hzts) > 0) ^ bool(len(ort_hztfs) > 0)
-
                 assert all(isinstance(x, Firmenkalender) for x in all_data[VDV_Table_Name.FIRMENKALENDER])
                 firmenkalenders = [x for x in all_data[VDV_Table_Name.FIRMENKALENDER] if isinstance(x, Firmenkalender)]
 
@@ -537,14 +536,25 @@ class VdvIngester(AbstractIngester):
                         cur_rec_sel = this_route_rec_sels[i]
                         # Add the first station
                         if i == 0:
-                            # Check the rec_frt_hzts for the first station
+                            # REC_FRT_HZT carries per-trip dwells. We treat FRT_HZT_ZEIT == 0 as
+                            # "no per-trip override" (inherit the ORT_HZTF default) rather than as
+                            # an authoritative zero dwell — real IVU.plan exports emit zero rows
+                            # for every stop and only mean to override on the non-zero ones.
                             first_station_pk = (cur_rec_sel.basis_version, cur_rec_sel.onr_typ_nr, cur_rec_sel.ort_nr)
                             first_station_rec_frt_hzts = [
-                                x for x in this_trip_rec_frt_hzts if x.position_key == first_station_pk
+                                x
+                                for x in this_trip_rec_frt_hzts
+                                if x.position_key == first_station_pk and x.frt_hzt_zeit > timedelta(0)
                             ]
 
-                            # Check the ort_hztfs for the first station
-                            first_station_ort_hztfs = [x for x in ort_hztfs if x.position_key == first_station_pk]
+                            # ORT_HZTF is keyed by (basis_version, fgr_nr, onr_typ_nr, ort_nr);
+                            # filter by the trip's timing group so stops shared across multiple
+                            # FGRs don't fall through to 0s.
+                            first_station_ort_hztfs = [
+                                x
+                                for x in ort_hztfs
+                                if x.position_key == first_station_pk and x.fgr_nr == rec_frt.fgr_nr
+                            ]
 
                             if len(first_station_rec_frt_hzts) == 1:
                                 dwell_duration = first_station_rec_frt_hzts[0].frt_hzt_zeit
@@ -570,13 +580,20 @@ class VdvIngester(AbstractIngester):
                         elapsed_duration += driving_duration
                         arrival_time_from_start.append(elapsed_duration)
 
-                        # Load the dwell duration for the destination station of this segment
+                        # Load the dwell duration for the destination station of this segment.
+                        # Same precedence rules as the first-station case above: zero-valued
+                        # REC_FRT_HZT rows are treated as "no override", and ORT_HZTF is filtered
+                        # by the trip's FGR_NR.
                         next_station_pk = (cur_rec_sel.basis_version, cur_rec_sel.sel_ziel_typ, cur_rec_sel.sel_ziel)
                         next_station_rec_frt_hzts = [
-                            x for x in this_trip_rec_frt_hzts if x.position_key == next_station_pk
+                            x
+                            for x in this_trip_rec_frt_hzts
+                            if x.position_key == next_station_pk and x.frt_hzt_zeit > timedelta(0)
                         ]
 
-                        next_station_ort_hztfs = [x for x in ort_hztfs if x.position_key == next_station_pk]
+                        next_station_ort_hztfs = [
+                            x for x in ort_hztfs if x.position_key == next_station_pk and x.fgr_nr == rec_frt.fgr_nr
+                        ]
 
                         if len(next_station_rec_frt_hzts) == 1:
                             dwell_duration = next_station_rec_frt_hzts[0].frt_hzt_zeit
@@ -814,16 +831,11 @@ def validate_input_data_vdv_451(
             + " aborting.",
         )
 
-    # Either REC_FRT_HZT or ORT_HZTF must be present, not both(?)
-
-    if (VDV_Table_Name.REC_FRT_HZT in all_tables.keys()) and (VDV_Table_Name.ORT_HZTF in all_tables.keys()):
-        # Both tables present...
-        raise ValueError(
-            "Either REC_FRT_HZT or ORT_HZTF must be present in the dataset, but both are present. Aborting."
-        )
-
+    # At least one of REC_FRT_HZT (per-trip dwell) or ORT_HZTF (default dwell per
+    # stop+Fahrzeitgruppe) must be present. Real-world IVU.plan exports ship both:
+    # REC_FRT_HZT carries per-trip overrides where they apply; ORT_HZTF supplies the
+    # default for the rest. The downstream lookup handles both-present.
     if (VDV_Table_Name.REC_FRT_HZT not in all_tables.keys()) and (VDV_Table_Name.ORT_HZTF not in all_tables.keys()):
-        # Gar keine Haltezeiten dabei
         raise ValueError("Neither REC_FRT_HZT nor ORT_HZTF present in the directory. Aborting.")
 
     logger.info("All necessary tables are present in the directory.")
