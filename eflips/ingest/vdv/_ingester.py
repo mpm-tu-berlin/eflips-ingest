@@ -1,3 +1,4 @@
+import codecs
 import csv
 import enum
 import glob
@@ -240,7 +241,22 @@ class VdvIngester(AbstractIngester):
         dir = self.path_for_uuid(uuid)
         os.makedirs(dir, exist_ok=False)
         with ZipFile(x10_zip_file, "r") as zip_file:
-            zip_file.extractall(dir)
+            # Check if it's nested, if yes, follow the nesting and extract to the correct directory
+            while len(zip_file.namelist()) == 1 and zip_file.namelist()[0].endswith(".zip"):
+                nested_zip_file_name = zip_file.namelist()[0]
+                new_zip_file = ZipFile(zip_file.open(nested_zip_file_name))
+                zip_file = new_zip_file
+
+            # Check if there is a single subdirectory, if yes, follow it and extract to the correct directory
+            members = zip_file.infolist()
+            names = zip_file.namelist()
+            # Strip only if every entry lives under a single common folder
+            if all("/" in n for n in names) and len({n.split("/", 1)[0] for n in names}) == 1:
+                cut = len(names[0].split("/", 1)[0]) + 1
+                for m in members:
+                    m.filename = m.filename[cut:]
+
+            zip_file.extractall(dir, [m for m in members if m.filename])
 
         # Check if all the required tables are present in the directory
         try:
@@ -698,6 +714,9 @@ class VdvIngester(AbstractIngester):
         }
 
 
+MAXIMUM_FILE_SIZE_B = 4 * 1024 * 1024 * 1024  # 4 GiB, as everything above is probably junk.
+
+
 def validate_zip_file(zipfile: Path) -> bool | Dict[str, str]:
     """
     Validate the zip file.
@@ -714,9 +733,15 @@ def validate_zip_file(zipfile: Path) -> bool | Dict[str, str]:
                 if entry.file_size == 0:
                     valid = False
                     error_messages[entry.filename] = "Empty file"
-                elif entry.file_size > 100 * 1024 * 1024:
+                elif entry.file_size > MAXIMUM_FILE_SIZE_B:
                     valid = False
-                    error_messages[entry.filename] = "File size exceeds 100 MiB"
+                    error_messages[entry.filename] = f"File size exceeds {MAXIMUM_FILE_SIZE_B/(1024*1024)} MiB"
+            elif entry.filename.endswith(".txt"):
+                # Ignore .txt files, as they are often included in VDV datasets as metadata files, but we do not need them for the ingestion
+                continue
+            elif entry.filename.endswith(".zip"):
+                # If we have a nested zip file, go into it and check the files there as well
+                return validate_zip_file(zip_file.open(entry))
             else:
                 valid = False
                 error_messages[entry.filename] = "Invalid file extension or is a directory"
@@ -813,91 +838,105 @@ def check_vdv451_file_header(abs_file_path: str) -> VDVTable:
 
     """
 
-    # 1. Open file and recognize the encoding
-    # For VDV 451, either ASCII or ISO8859-1 is allowed as encoding for the table datasets. However, the header is always ASCII (see Ch. 4.1 of VDV 451).
-    # Therefore, we open the file with ISO8859-1
-    # (and return an error if it is not ASCII or ISO8859-1).
+    # Per VDV 451 § 4.1 the header is always ASCII, so the "chs" line that declares
+    # the body encoding can itself always be read as ASCII. We do this in two passes:
+    # first an ASCII-only pass that only extracts the declared character set, then a
+    # second pass with the resolved encoding that parses the rest of the header.
     logger = logging.getLogger(__name__)
 
-    table_name_str = None
-    character_set = None
-    datatypes = None
-    column_names = None
+    # Allowed character sets per VDV 451, keyed by their canonical Python codec name.
+    # codecs.lookup() normalizes the various spellings the spec/files use in the wild
+    # (e.g. "ISO-8859-1" vs. "ISO8859-1", "WINDOWS-1252" vs. "cp1252", "UTF-8" vs. "UTF8").
+    allowed_canonical_charsets = {"ascii", "iso8859-1", "cp1252", "utf-8"}
 
-    valid_character_sets = ["ASCII", "ISO8859-1"]
+    # Read in binary mode and decode lines individually as ASCII. Text-mode I/O
+    # would fill an ~8 KiB buffer up front and try to decode the whole block,
+    # which fails when later record lines contain non-ASCII bytes — even though
+    # the spec-required pre-'chs' header is itself pure ASCII.
+    character_set: Optional[str] = None
+    with open(abs_file_path, "rb") as f:
+        for raw_line in f:
+            try:
+                line = raw_line.decode("ascii")
+            except UnicodeDecodeError as e:
+                e.add_note(
+                    "The header of the file "
+                    + str(abs_file_path)
+                    + " contains non-ASCII characters before the 'chs' line. "
+                    "This is not allowed according to the VDV 451 specification."
+                )
+                raise
 
-    try:
-        with open(abs_file_path, "r", encoding="ISO8859-1") as f:
-            for line in f:
-                if line.strip().split(";")[0] == "chs":
-                    # For these modes, we need to utilize the CSV reader here in order to get rid of the double quote marks enclosing the strings (otherwise, we would have e.g. '"Templin, ZOB"') etc.
-                    parts_csvrdr = csv.reader([line], delimiter=";", skipinitialspace=True)
-                    parts = list(parts_csvrdr)[0]
+            parts = line.strip().split(";")
+            if parts[0] != "chs":
+                continue
 
-                else:
-                    # The other modes should be uncritical as they do not contain those double quotes or we dont need the info in them
-                    parts = line.strip().split(";")
+            # The chs value is quoted (e.g. chs; "ISO8859-1"); use csv to strip quotes.
+            parts_csvrdr = csv.reader([line], delimiter=";", skipinitialspace=True)
+            parts = list(parts_csvrdr)[0]
+            raw_charset = parts[1].strip().upper()
 
-                # Handling of the line based on the specific "command" (see VDV 451 documentation)
-                command = parts[0]
+            try:
+                character_set = codecs.lookup(raw_charset).name
+            except LookupError:
+                raise ValueError(f"The file {abs_file_path} declares an unknown character set: {raw_charset!r}.")
 
-                if command == "tbl":
-                    # Get the table name (e.g. 'MENGE_BASIS_VERSIONEN')
-                    table_name_str = parts[1].upper().strip()
+            if character_set not in allowed_canonical_charsets:
+                raise ValueError(
+                    f"The file {abs_file_path} uses an encoding that is not allowed by "
+                    f"VDV 451: {raw_charset!r} (resolved to {character_set!r}). "
+                    "Allowed: ASCII, ISO8859-1, WINDOWS-1252, UTF-8."
+                )
+            break
 
-                elif command == "chs":
-                    # Get the character set used in the file
-                    character_set = parts[1].upper().strip()
+    if character_set is None:
+        msg = f"The file {abs_file_path} does not contain a character set in the header."
+        logger.info(msg)
+        raise ValueError(msg)
 
-                    # Oftentimes, the Character set is accidentally named as ISO-8859-1 (additional dash).
-                    # Fix the character set if it is ISO-8859-1 to the correct form
-                    if character_set == "ISO-8859-1":
-                        character_set = "ISO8859-1"
+    table_name_str: Optional[str] = None
+    datatypes: Optional[List[Optional[VDV_Data_Type]]] = None
+    column_names: Optional[List[str]] = None
 
-                    if character_set not in valid_character_sets:
-                        raise ValueError(
-                            "The file",
-                            abs_file_path,
-                            " uses an encoding that is not allowed according to the VDV 451 specification:"
-                            + character_set
-                            + " does not match 'ASCII' or 'ISO8859-1'.",
-                        )
+    with open(abs_file_path, "r", encoding=character_set) as f:
+        for line in f:
+            parts = line.strip().split(";")
+            command = parts[0]
 
-                elif command == "frm":
-                    # todo (also for charset) check for double entries of frm, chs, tbl, ..?
-                    # Get data formats of the columns (this will be something like ['num[9.0]', 'num[8.0]', 'char[40]', 'num[2.4]'])
-                    formats = parts[1:]
+            if command == "chs":
+                # Already parsed in the ASCII pass above.
+                continue
 
-                    try:
-                        datatypes = parse_datatypes(formats)
-                    except ValueError as e:
-                        e.add_note(
-                            "The file"
-                            + str(abs_file_path)
-                            + " contains invalid column data types. Please check the formatting of the data types in the file."
-                        )
-                        raise e
+            if command == "tbl":
+                # Get the table name (e.g. 'MENGE_BASIS_VERSIONEN')
+                table_name_str = parts[1].upper().strip()
 
-                elif command == "atr":
-                    # Get the column names
-                    cx = parts[1:]
-                    column_names = [x.upper().strip() for x in cx]
-                elif command == "rec":
-                    if table_name_str is not None and character_set is not None:
-                        # We have all necessary information (and it contains at least one record)
-                        break
+            elif command == "frm":
+                # Get data formats of the columns (e.g. ['num[9.0]', 'char[40]', 'num[2.4]'])
+                formats = parts[1:]
 
-                elif command == "eof":
-                    # We reached the end of the file without seeing any records
-                    raise ValueError("The file" + str(abs_file_path) + " does not contain any records.")
+                try:
+                    datatypes = parse_datatypes(formats)
+                except ValueError as e:
+                    e.add_note(
+                        "The file"
+                        + str(abs_file_path)
+                        + " contains invalid column data types. Please check the formatting of the data types in the file."
+                    )
+                    raise e
 
-    except UnicodeDecodeError as e:
-        e.add_note(
-            "The header of the file"
-            + str(abs_file_path)
-            + " is using an encoding that contains non-ASCII characters. This is not allowed according to the VDV 451 specification.",
-        )
-        raise e
+            elif command == "atr":
+                # Get the column names
+                cx = parts[1:]
+                column_names = [x.upper().strip() for x in cx]
+            elif command == "rec":
+                if table_name_str is not None:
+                    # We have all necessary information (and it contains at least one record)
+                    break
+
+            elif command == "eof":
+                # We reached the end of the file without seeing any records
+                raise ValueError("The file" + str(abs_file_path) + " does not contain any records.")
 
     # Raise an error if table name or encoding is not found
     if table_name_str is None:
