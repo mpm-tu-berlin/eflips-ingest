@@ -675,20 +675,20 @@ class RecOrt(VdvBaseObjectWithONR):
         # ORT_REF_ORT / ORT_REF_ORT_TYP point at the parent "logical" station that groups several
         # physical positions. Standalone places (e.g. depot waypoints with ONR_TYP_NR=6) have these
         # blank in the source file, in which case the parser delivers None.
-        assert data["ORT_REF_ORT"] is None or isinstance(data["ORT_REF_ORT"], int), (
-            "The `ort_ref_ort` should be an integer or None."
-        )
-        assert data["ORT_REF_ORT_TYP"] is None or isinstance(data["ORT_REF_ORT_TYP"], int), (
-            "The `ort_ref_ort_typ` should be an integer or None."
-        )
+        assert data["ORT_REF_ORT"] is None or isinstance(
+            data["ORT_REF_ORT"], int
+        ), "The `ort_ref_ort` should be an integer or None."
+        assert data["ORT_REF_ORT_TYP"] is None or isinstance(
+            data["ORT_REF_ORT_TYP"], int
+        ), "The `ort_ref_ort_typ` should be an integer or None."
         if data["ORT_REF_ORT_KUERZEL"] is not None:
             assert isinstance(data["ORT_REF_ORT_KUERZEL"], str), "The `ort_ref_ort_kuerzel` should be a string."
             ort_ref_ort_kuerzel = data["ORT_REF_ORT_KUERZEL"]
         else:
             ort_ref_ort_kuerzel = None
-        assert data["ORT_REF_ORT_NAME"] is None or isinstance(data["ORT_REF_ORT_NAME"], str), (
-            "The `ort_ref_ort_name` should be a string or None."
-        )
+        assert data["ORT_REF_ORT_NAME"] is None or isinstance(
+            data["ORT_REF_ORT_NAME"], str
+        ), "The `ort_ref_ort_name` should be a string or None."
 
         return RecOrt(
             basis_version=data["BASIS_VERSION"],
@@ -718,10 +718,10 @@ class RecOrt(VdvBaseObjectWithONR):
         # Group by parent ref. Rows without a parent (standalone places like depot waypoints)
         # form their own singleton group keyed by their own primary key, so they each become a
         # standalone Station rather than being merged or dropped.
-        rec_orts_by_ref_ort: Dict[Tuple[int, ...], List["RecOrt"]] = {}
+        rec_orts_by_ref_ort: Dict[PrimaryKey, List["RecOrt"]] = {}
         for rec_ort in rec_orts:
             if rec_ort.ort_ref_ort is None:
-                group_key: Tuple[int, ...] = rec_ort.primary_key
+                group_key: PrimaryKey = rec_ort.primary_key
             else:
                 group_key = (rec_ort.ort_ref_ort,)
             rec_orts_by_ref_ort.setdefault(group_key, []).append(rec_ort)
@@ -1016,46 +1016,72 @@ class RecLid(VdvBaseObject):
             (self.basis_version, self.li_nr, self.str_li_var)
         ]
 
+        # Collapse runs of consecutive LID_VERLAUF entries that resolve to the *same* Station object.
+        # VDV routes routinely list one place twice in a row -- e.g. an operational/service point and the
+        # passenger Haltepunkt, which are two REC_ORT children of a single ORT_REF_ORT and are therefore
+        # grouped into one Station -- joined by a zero-length, zero-SEL_FZT segment. In the eflips-model
+        # these are a single stop; keeping both produced a duplicate AssocRouteStation/StopTime pair that
+        # shared an arrival timestamp, which downstream timestamp-spreading then shoved past the
+        # neighbouring trip's start, manifesting as temporally overlapping rotations. Each run collapses
+        # to one node; the segment between two nodes is the original REC_SEL from the *last* entry of the
+        # previous run to the *first* entry of the next run, so every retained segment still exists in
+        # REC_SEL (this matters for the rare runs that occur mid-route, not just at the start/end).
+        runs: List[List[LidVerlauf]] = []
+        for this_lid_verlauf in this_routes_lid_verlaufs:
+            this_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
+            if runs and (stations_by_basis_version_and_onr_typ_nr_and_ort_nr[runs[-1][0].position_key] is this_station):
+                runs[-1].append(this_lid_verlauf)
+            else:
+                runs.append([this_lid_verlauf])
+
         assoc_route_stations: List[AssocRouteStation] = []
         rec_sels: List[RecSel] = []
         elapsed_distance = 0
-        this_rec_ort: RecOrt
-        this_station: Station
+        rep_rec_ort: RecOrt
+        rep_station: Station
 
-        for i, this_lid_verlauf in enumerate(this_routes_lid_verlaufs):
-            this_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
-            this_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
+        for i, run in enumerate(runs):
+            rep_lid_verlauf = run[0]
+            rep_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[rep_lid_verlauf.position_key]
+            rep_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[rep_lid_verlauf.position_key]
 
-            if this_rec_ort.latitude is None or this_rec_ort.longitude is None:
-                logger.debug(f"Encountered a station without coordinates: {this_rec_ort}")
+            if rep_rec_ort.latitude is None or rep_rec_ort.longitude is None:
+                logger.debug(f"Encountered a station without coordinates: {rep_rec_ort}")
                 location: Optional[str] = None
-            elif geometry_has_z() and this_rec_ort.altitude is not None:
-                location = f"POINTZ({this_rec_ort.longitude} {this_rec_ort.latitude} {this_rec_ort.altitude})"
+            elif geometry_has_z() and rep_rec_ort.altitude is not None:
+                location = f"POINTZ({rep_rec_ort.longitude} {rep_rec_ort.latitude} {rep_rec_ort.altitude})"
             else:
-                location = f"POINT({this_rec_ort.longitude} {this_rec_ort.latitude})"
+                location = f"POINT({rep_rec_ort.longitude} {rep_rec_ort.latitude})"
 
             assoc_route_stations.append(
                 AssocRouteStation(
                     scenario=scenario,
                     route=route,
-                    station=this_station,
+                    station=rep_station,
                     location=location,
                     elapsed_distance=elapsed_distance,
                 )
             )
 
             if i == 0:
-                route.departure_station = this_station
+                route.departure_station = rep_station
 
-            if i < len(this_routes_lid_verlaufs) - 1:
-                next_lid_verlauf = this_routes_lid_verlaufs[i + 1]
+            if i < len(runs) - 1:
+                # The connecting segment runs from the last entry of this run to the first entry of the
+                # next run -- both are adjacent in the original LID_VERLAUF, so the REC_SEL exists.
+                seg_start_lid_verlauf = run[-1]
+                seg_end_lid_verlauf = runs[i + 1][0]
+                seg_start_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[
+                    seg_start_lid_verlauf.position_key
+                ]
+                seg_end_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[seg_end_lid_verlauf.position_key]
                 this_rec_sel = rec_sel_by_basis_version_and_start_type_and_start_nr_and_end_type_and_end_nr[
                     (
                         self.basis_version,
-                        this_lid_verlauf.onr_typ_nr,
-                        this_lid_verlauf.ort_nr,
-                        next_lid_verlauf.onr_typ_nr,
-                        next_lid_verlauf.ort_nr,
+                        seg_start_lid_verlauf.onr_typ_nr,
+                        seg_start_lid_verlauf.ort_nr,
+                        seg_end_lid_verlauf.onr_typ_nr,
+                        seg_end_lid_verlauf.ort_nr,
                     )
                 ]
                 rec_sels.append(this_rec_sel)
@@ -1063,19 +1089,18 @@ class RecLid(VdvBaseObject):
                 if this_rec_sel.sel_laenge is not None and this_rec_sel.sel_laenge > 0:
                     elapsed_distance += this_rec_sel.sel_laenge
                 else:
-                    next_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[next_lid_verlauf.position_key]
                     have_coords = (
-                        this_rec_ort.latitude is not None
-                        and this_rec_ort.longitude is not None
-                        and next_rec_ort.latitude is not None
-                        and next_rec_ort.longitude is not None
+                        seg_start_rec_ort.latitude is not None
+                        and seg_start_rec_ort.longitude is not None
+                        and seg_end_rec_ort.latitude is not None
+                        and seg_end_rec_ort.longitude is not None
                     )
                     if have_coords:
                         estimated = _geodesic_distance_m(
-                            this_rec_ort.latitude,  # type: ignore[arg-type]
-                            this_rec_ort.longitude,  # type: ignore[arg-type]
-                            next_rec_ort.latitude,  # type: ignore[arg-type]
-                            next_rec_ort.longitude,  # type: ignore[arg-type]
+                            seg_start_rec_ort.latitude,  # type: ignore[arg-type]
+                            seg_start_rec_ort.longitude,  # type: ignore[arg-type]
+                            seg_end_rec_ort.latitude,  # type: ignore[arg-type]
+                            seg_end_rec_ort.longitude,  # type: ignore[arg-type]
                         )
                         logger.debug(
                             f"Estimating segment length via WGS84 geodesic: {estimated:.1f} m for "
@@ -1095,7 +1120,7 @@ class RecLid(VdvBaseObject):
                             "and at least one endpoint lacks coordinates for the geodesic fallback."
                         )
 
-        route.arrival_station = this_station
+        route.arrival_station = rep_station
         route.distance = elapsed_distance
         route.assoc_route_stations = assoc_route_stations
 
