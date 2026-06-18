@@ -737,7 +737,7 @@ class VdvIngester(AbstractIngester):
                                 for i, ars in enumerate(sorted_ars):
                                     ars.elapsed_distance = DEADHEAD_DISTANCE_M if i == n_ars - 1 else ars_step * i
                             route.distance = DEADHEAD_DISTANCE_M
-                            logger.info(
+                            logger.debug(
                                 f"Synthesised depot deadhead trip {rec_frt.frt_fid} "
                                 f"({dep_name!r} -> {arr_name!r}) as 5 min / 1000 m."
                             )
@@ -751,7 +751,7 @@ class VdvIngester(AbstractIngester):
                             )
                             # Fall through to the materialisation loop below.
                         else:
-                            logger.info(
+                            logger.debug(
                                 f"Skipping zero-duration non-revenue trip {rec_frt.frt_fid} "
                                 f"({dep_name!r} -> {arr_name!r})."
                             )
