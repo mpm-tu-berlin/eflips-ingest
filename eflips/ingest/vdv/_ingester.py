@@ -1,6 +1,7 @@
 import codecs
 import csv
 import glob
+import json
 import logging
 import os
 import pickle
@@ -36,6 +37,46 @@ from eflips.ingest.vdv._xmldata import (
     SelFztFeld,
     VdvBaseObject,
 )
+
+
+class _DebugSink:
+    """Append-only JSONL sink for tracing VDV ingest decisions.
+
+    Activated by setting the environment variable ``EFLIPS_VDV_DEBUG_LOG`` to a file path.
+    When unset, ``log()`` is a no-op. Records are flushed immediately so a crash mid-ingest
+    still produces a useful trace.
+    """
+
+    def __init__(self) -> None:
+        path = os.environ.get("EFLIPS_VDV_DEBUG_LOG")
+        self.enabled = bool(path)
+        self._fp = open(path, "w", encoding="utf-8") if path else None
+        if self.enabled:
+            self.log("debug_session_start", pid=os.getpid())
+
+    def log(self, event: str, **fields) -> None:
+        if not self.enabled:
+            return
+        assert self._fp is not None
+        rec = {"event": event, **fields}
+        # Coerce common non-JSON types.
+        for k, v in list(rec.items()):
+            if isinstance(v, (date, datetime)):
+                rec[k] = v.isoformat()
+            elif isinstance(v, timedelta):
+                rec[k] = v.total_seconds()
+            elif isinstance(v, tuple):
+                rec[k] = list(v)
+        self._fp.write(json.dumps(rec, default=str) + "\n")
+        self._fp.flush()
+
+    def close(self) -> None:
+        if self._fp is not None:
+            try:
+                self._fp.close()
+            finally:
+                self._fp = None
+                self.enabled = False
 
 
 class VDV_Data_Type(Enum):
@@ -154,27 +195,124 @@ class VDVTable:
 # Spread duplicate arrival times symmetrically around the original timestamp within a 1-minute window.
 _DUPLICATE_SPREAD_HALFWIDTH = timedelta(seconds=29)
 
+# Minimum travel time between two distinct stops. VDV SEL_FZT_FELD legitimately contains 0-second
+# segments for some Fahrzeitgruppen (notably degenerate ones), which would give two distinct stops the
+# same arrival timestamp; we floor each inter-stop step to this so arrival times stay strictly increasing.
+_MIN_SEGMENT_TRAVEL = timedelta(seconds=1)
+
 
 def fix_identical_stop_times(stop_times: List[StopTime]) -> None:
     """
-    Linearly spread groups of stop times that share an arrival time across ``[T-29s, T+29s]``.
+    Give a distinct timestamp to runs of consecutive stop times that share an arrival time, by spreading
+    each run within ``[T-29s, T+29s]`` -- but never moving the trip's first or last stop and never
+    crossing the neighbouring stops.
 
-    Two identical times → ``[T-29s, T+29s]``. Three → ``[T-29s, T, T+29s]``. And so on.
+    Both constraints matter. The first and last stop are pinned to the trip's ``departure_time`` /
+    ``arrival_time`` (the latter clamped to the next trip's start on the same rotation), so moving them
+    would re-introduce rotation overlaps. And after clamping, adjacent stops can be only ~1s apart, so a
+    naive ±29s spread would shove a stop past its neighbour and break the model's requirement that stop
+    times be ordered like the route's stations. We therefore confine each run to the open interval
+    between its surrounding stops; if there is no room, the stops keep their (equal) time, which the model
+    permits (it only requires a non-decreasing order, and stop times are created in route order).
 
-    Modifies ``stop_times`` in place. Dwell durations are left untouched.
+    With :func:`normalize_trip_offsets` flooring every step to >=1s, ties are rare here; this mainly
+    cleans up the occasional tie left by clamp rounding. Modifies ``stop_times`` in place; dwells untouched.
     """
-    groups: Dict[datetime, List[int]] = defaultdict(list)
-    for i, st in enumerate(stop_times):
-        groups[st.arrival_time].append(i)
+    n = len(stop_times)
+    if n < 3:
+        # Any tie in a 1- or 2-stop trip can only involve a pinned endpoint, which we never move.
+        return
 
-    for indices in groups.values():
-        n = len(indices)
-        if n < 2:
-            continue
-        span = 2 * _DUPLICATE_SPREAD_HALFWIDTH
-        for k, idx in enumerate(indices):
-            offset = -_DUPLICATE_SPREAD_HALFWIDTH + (k / (n - 1)) * span
-            stop_times[idx].arrival_time += offset
+    hw = _DUPLICATE_SPREAD_HALFWIDTH
+    one = timedelta(seconds=1)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and stop_times[j + 1].arrival_time == stop_times[i].arrival_time:
+            j += 1
+        if j > i:  # consecutive tied run stop_times[i..j]
+            anchor_low = i == 0  # run pins the first stop -> keep it, spread the rest forward
+            anchor_high = j == n - 1  # run pins the last stop -> keep it, spread the rest backward
+            if not (anchor_low and anchor_high):
+                t = stop_times[i].arrival_time
+                lo = t if anchor_low else max(stop_times[i - 1].arrival_time + one, t - hw)
+                hi = t if anchor_high else min(stop_times[j + 1].arrival_time - one, t + hw)
+                if hi < lo:
+                    lo = hi = t
+                span_s = (hi - lo).total_seconds()
+                m = j - i + 1
+                for k in range(m):
+                    stop_times[i + k].arrival_time = lo + timedelta(seconds=round(k / (m - 1) * span_s))
+        i = j + 1
+
+
+def _apportion_seconds(deltas: List[int], budget: int) -> List[int]:
+    """
+    Scale a list of non-negative integer ``deltas`` down so they sum to ``budget`` seconds, using
+    largest-remainder rounding so the result sums to exactly ``budget``. If the deltas already fit
+    (``sum <= budget``) they are returned unchanged. Used to compress an over-long trip into the time
+    the schedule actually budgets before the next trip departs.
+    """
+    total = sum(deltas)
+    if total <= budget or total == 0:
+        return deltas
+    scale = budget / total
+    ideal = [d * scale for d in deltas]
+    out = [int(x) for x in ideal]
+    remainder = budget - sum(out)
+    for i in sorted(range(len(deltas)), key=lambda i: ideal[i] - out[i], reverse=True)[:remainder]:
+        out[i] += 1
+    return out
+
+
+def normalize_trip_offsets(
+    arrival_offsets: List[timedelta],
+    dwell_durations: List[timedelta],
+    frt_start: timedelta,
+    next_trip_start: Optional[timedelta],
+) -> Tuple[List[timedelta], List[timedelta]]:
+    """
+    Normalise a trip's per-stop arrival offsets and dwells so the trip is internally consistent and does
+    not overlap the next trip on its rotation.
+
+    Two adjustments, both expressed on the inter-stop steps ``arrival[i+1] - arrival[i]``:
+
+    * **Floor** every step to :data:`_MIN_SEGMENT_TRAVEL` so two distinct stops never share a timestamp
+      (VDV emits 0-second SEL_FZT for some Fahrzeitgruppen).
+    * **Clamp**: if ``next_trip_start`` is given and the (floored) trip would still arrive after the next
+      trip departs, scale the steps down (preserving their shape) so the trip ends exactly at
+      ``next_trip_start``. This treats REC_FRT.frt_start as authoritative over the nominal SEL_FZT sum,
+      which systematically over-estimates the scheduled running time at tight connections.
+
+    Returns new ``(arrival_offsets, dwell_durations)`` in whole seconds; the first offset stays at
+    ``frt_start`` and the terminus dwell stays 0.
+    """
+    n = len(arrival_offsets)
+    if n <= 1:
+        return arrival_offsets, dwell_durations
+
+    steps = [max(_MIN_SEGMENT_TRAVEL, arrival_offsets[i + 1] - arrival_offsets[i]) for i in range(n - 1)]
+    step_seconds = [int(round(s.total_seconds())) for s in steps]
+
+    if next_trip_start is not None:
+        budget = int(round((next_trip_start - frt_start).total_seconds()))
+        if budget > 0:
+            step_seconds = _apportion_seconds(step_seconds, budget)
+
+    new_offsets = [frt_start]
+    for s in step_seconds:
+        new_offsets.append(new_offsets[-1] + timedelta(seconds=s))
+
+    # Keep each dwell within its outgoing step so arrival[i] + dwell[i] never passes arrival[i+1];
+    # the terminus dwell stays 0 (trip.arrival_time is the arrival at the last stop).
+    new_dwells: List[timedelta] = []
+    for i in range(n):
+        if i == n - 1:
+            new_dwells.append(timedelta(0))
+        else:
+            step = timedelta(seconds=step_seconds[i])
+            new_dwells.append(max(timedelta(0), min(dwell_durations[i], step)))
+    return new_offsets, new_dwells
 
 
 class VdvIngester(AbstractIngester):
@@ -231,6 +369,8 @@ class VdvIngester(AbstractIngester):
 
     def ingest(self, uuid: UUID, progress_callback: None | Callable[[float], None] = None) -> None:
         logger = logging.getLogger(__name__)
+        debug = _DebugSink()
+        debug.log("ingest_start", uuid=str(uuid))
 
         temp_dir = self.path_for_uuid(uuid)
         all_tables_file = Path(temp_dir) / "all_tables.pkl"
@@ -240,6 +380,10 @@ class VdvIngester(AbstractIngester):
         all_data: Dict[VDV_Table_Name, List[VdvBaseObject]] = {}
         for tbl in all_tables:
             all_data[tbl] = import_vdv452_table_records(all_tables[tbl])
+
+        if debug.enabled:
+            for tbl_name, rows in all_data.items():
+                debug.log("table_loaded", table=tbl_name.value, row_count=len(rows))
 
         engine = create_engine(self.database_url)
         with Session(engine) as session:
@@ -260,6 +404,7 @@ class VdvIngester(AbstractIngester):
 
                 # Rotations. A dummy vehicle type covers rotations without an explicit FZG_TYP_NR.
                 rotations_by_vdv_pk: Dict[PrimaryKey, Rotation] = {}
+                vdv_rotations_by_pk: Dict[PrimaryKey, RecUmlauf] = {}
                 dummy_vehicle_type: Optional[VehicleType] = None
                 for vdv_rotation in all_data[VDV_Table_Name.REC_UMLAUF]:
                     assert isinstance(vdv_rotation, RecUmlauf)
@@ -271,6 +416,16 @@ class VdvIngester(AbstractIngester):
                     )
                     session.add(db_rotation)
                     rotations_by_vdv_pk[vdv_rotation.primary_key] = db_rotation
+                    vdv_rotations_by_pk[vdv_rotation.primary_key] = vdv_rotation
+                    debug.log(
+                        "rec_umlauf",
+                        key=list(vdv_rotation.primary_key),
+                        um_uid=vdv_rotation.um_uid,
+                        tagesart_nr=vdv_rotation.tagesart_nr,
+                        anf_station_pk=list(vdv_rotation.start_station_primary_key),
+                        end_station_pk=list(vdv_rotation.end_station_primary_key),
+                        fzg_typ_nr=vdv_rotation.fzg_typ_nr,
+                    )
 
                 # Stations. RecOrt records are more like RouteStopAssociations in eflips-model; the actual
                 # Station objects are extracted via RecOrt.list_of_stations.
@@ -369,6 +524,36 @@ class VdvIngester(AbstractIngester):
 
                 rec_frts = cast(List[RecFrt], all_data[VDV_Table_Name.REC_FRT])
 
+                if debug.enabled:
+                    for rec_frt in rec_frts:
+                        debug.log(
+                            "rec_frt",
+                            frt_fid=rec_frt.frt_fid,
+                            li_nr=rec_frt.li_nr,
+                            str_li_var=rec_frt.str_li_var,
+                            tagesart_nr=rec_frt.tagesart_nr,
+                            um_uid=rec_frt.um_uid,
+                            fgr_nr=rec_frt.fgr_nr,
+                            fahrtart_nr=rec_frt.fahrtart_nr,
+                            frt_start_s=int(rec_frt.frt_start.total_seconds()),
+                        )
+
+                # For each trip, the FRT_START of the *next* trip on the same rotation -- the time by
+                # which the bus must be ready to depart again. Used below to clamp a trip whose computed
+                # arrival (from the nominal SEL_FZT sum) would overrun the next trip's start. The rotation
+                # template is the same on every calendar day, so this is day-independent. We clamp against
+                # the next REC_FRT by FRT_START regardless of whether it is later dropped, which is
+                # conservative (it never leaves an overlap, at worst compresses a touch more than needed).
+                next_frt_start_by_fid: Dict[int, timedelta] = {}
+                rec_frts_by_rotation: Dict[Tuple[int, int, int], List[RecFrt]] = defaultdict(list)
+                for rec_frt in rec_frts:
+                    rec_frts_by_rotation[(rec_frt.basis_version, rec_frt.tagesart_nr, rec_frt.um_uid)].append(rec_frt)
+                for rotation_rec_frts in rec_frts_by_rotation.values():
+                    rotation_rec_frts.sort(key=lambda f: f.frt_start)
+                    for earlier, later in zip(rotation_rec_frts, rotation_rec_frts[1:]):
+                        if later.frt_start > earlier.frt_start:
+                            next_frt_start_by_fid[earlier.frt_fid] = later.frt_start
+
                 rotations_by_vdv_pk_and_date: Dict[Tuple[int, int, int, date], Rotation] = {}
                 tz = pytz.timezone("Europe/Berlin")
 
@@ -376,19 +561,23 @@ class VdvIngester(AbstractIngester):
                     route_key = (rec_frt.basis_version, rec_frt.li_nr, rec_frt.str_li_var)
                     if route_key not in routes_by_vdv_pk:
                         logger.debug(f"Skipping trip {rec_frt.frt_fid}: route {route_key} was rejected.")
+                        debug.log(
+                            "trip_skipped", frt_fid=rec_frt.frt_fid, reason="route_rejected", route_key=list(route_key)
+                        )
                         continue
                     route = routes_by_vdv_pk[route_key]
                     route_rec_sels = rec_sels_by_route[route_key]
                     if not route_rec_sels:
                         raise ValueError(f"Trip {rec_frt.frt_fid} references route {route_key} which has no segments.")
 
-                    # REC_FRT_HZT carries per-trip dwell overrides. Real IVU.plan exports emit a row for every
-                    # stop with FRT_HZT_ZEIT == 0 even when the exporter only meant to override on the
-                    # non-zero ones. Treat that "all zeros" pattern as "no override" so the ORT_HZTF default
-                    # applies; otherwise, zeros are taken at face value.
+                    # REC_FRT_HZT carries per-trip dwell overrides. Per VDV 452 these are authoritative for
+                    # the stops they name (a value of 0 means a genuine 0 s dwell), so we take them at face
+                    # value. A stop without a REC_FRT_HZT row falls back to the ORT_HZTF default in
+                    # resolve_dwell. (We previously discarded the whole set when every row was 0, on the
+                    # theory that IVU.plan emits all-zero rows as filler -- but that substituted ORT_HZTF
+                    # passenger dwells onto trips the schedule budgeted no dwell for, inflating their
+                    # duration and overrunning the next trip on the rotation.)
                     trip_rec_frt_hzts = rec_frt_hzts_by_fid.get(rec_frt.frt_fid, [])
-                    if trip_rec_frt_hzts and all(h.frt_hzt_zeit == timedelta(0) for h in trip_rec_frt_hzts):
-                        trip_rec_frt_hzts = []
 
                     def resolve_dwell(position_pk: Tuple[int, int, int]) -> timedelta:
                         matches = [x for x in trip_rec_frt_hzts if x.position_key == position_pk]
@@ -429,17 +618,17 @@ class VdvIngester(AbstractIngester):
                     for rec_sel in route_rec_sels:
                         stations_in_order.append(stations_by_vdv_pk[rec_sel.end_station_primary_key])
 
-                    # Walk the route, accumulating arrival times and per-stop dwells.
+                    # Walk the route, accumulating arrival times and per-stop dwells. REC_FRT.frt_start is
+                    # the *departure* time from the first stop, and VDV 452 forbids a dwell at the start (and
+                    # end) stop of a trip, so the first stop carries no dwell: the first segment begins
+                    # exactly at frt_start.
                     elapsed = rec_frt.frt_start
                     arrival_offsets: List[timedelta] = []
                     dwell_durations: List[timedelta] = []
                     for i, rec_sel in enumerate(route_rec_sels):
                         if i == 0:
-                            first_pk = rec_sel.start_station_primary_key
                             arrival_offsets.append(elapsed)
-                            first_dwell = resolve_dwell(first_pk)
-                            dwell_durations.append(first_dwell)
-                            elapsed += first_dwell
+                            dwell_durations.append(timedelta(0))
                         elapsed += segment_durations[i]
                         arrival_offsets.append(elapsed)
                         next_pk = rec_sel.end_station_primary_key
@@ -447,29 +636,147 @@ class VdvIngester(AbstractIngester):
                         dwell_durations.append(next_dwell)
                         elapsed += next_dwell
 
+                    # Drop the terminus dwell: trip.arrival_time should be when the bus arrives at the
+                    # last stop, not when it would depart again. REC_FRT.frt_start of the *next* trip is
+                    # an absolute time-of-day with no inter-trip dwell baked in, so leaving the terminus
+                    # dwell in here makes consecutive trips on the same Umlauf overlap by exactly that
+                    # dwell.
+                    if dwell_durations:
+                        elapsed -= dwell_durations[-1]
+                        dwell_durations[-1] = timedelta(0)
+
                     # FRT_START and the computed end time are integer-seconds; the epsilon here just guards
                     # against floating-point drift inside timedelta arithmetic.
                     trip_duration = elapsed - rec_frt.frt_start
+
+                    # TODO(overlap-debug): per-trip timing breakdown for diagnosing rotation overlaps.
+                    # Remove together with the rest of the overlap instrumentation once the bug is fixed.
+                    if debug.enabled:
+                        _stop_pks = [route_rec_sels[0].start_station_primary_key] + [
+                            rs.end_station_primary_key for rs in route_rec_sels
+                        ]
+
+                        def _dwell_source(pk: Tuple[int, int, int]) -> str:
+                            if any(x.position_key == pk for x in trip_rec_frt_hzts):
+                                return "rec_frt_hzt"
+                            if (pk, rec_frt.fgr_nr) in ort_hztfs_by_key:
+                                return "ort_hztf"
+                            return "none"
+
+                        _raw_hzts = rec_frt_hzts_by_fid.get(rec_frt.frt_fid, [])
+                        debug.log(
+                            "trip_timing",
+                            frt_fid=rec_frt.frt_fid,
+                            fgr_nr=rec_frt.fgr_nr,
+                            fahrtart_nr=rec_frt.fahrtart_nr,
+                            route_key=[rec_frt.basis_version, rec_frt.li_nr, rec_frt.str_li_var],
+                            frt_start_s=int(rec_frt.frt_start.total_seconds()),
+                            computed_duration_s=int(trip_duration.total_seconds()),
+                            n_stops=len(_stop_pks),
+                            stop_onr_typ=[pk[1] for pk in _stop_pks],
+                            stop_ort_nr=[pk[2] for pk in _stop_pks],
+                            seg_fzt_s=[int(d.total_seconds()) for d in segment_durations],
+                            # dwell_durations[-1] has already had the terminus dwell zeroed above.
+                            dwell_s=[int(d.total_seconds()) for d in dwell_durations],
+                            first_dwell_s=int(dwell_durations[0].total_seconds()) if dwell_durations else 0,
+                            dwell_src=[_dwell_source(pk) for pk in _stop_pks],
+                            raw_hzt_count=len(_raw_hzts),
+                            raw_hzt_all_zero=(
+                                bool(_raw_hzts) and all(h.frt_hzt_zeit == timedelta(0) for h in _raw_hzts)
+                            ),
+                            hzt_used=bool(trip_rec_frt_hzts),
+                        )
+
                     if abs(trip_duration.total_seconds()) < 1.0:
                         # Per MENGE_ONR_TYP: 1=HP (passenger stop), 2=BHOF (depot point),
                         # 6=BP (operational point). IVU.plan emits zero-duration connector trips
                         # that touch a BHOF or BP — e.g. a depot deadhead-out, or a relief handover
-                        # at the same physical place under its operational identity. These are
-                        # schedule plumbing, not real movements; drop them. A zero-duration trip
-                        # between only-HP stops would be genuinely suspect, so still raise.
+                        # at the same physical place under its operational identity. A zero-duration
+                        # trip between only-HP stops would be genuinely suspect, so raise on those.
                         ONR_TYP_HP = 1
                         endpoint_types = {route_rec_sels[0].onr_typ_nr} | {s.sel_ziel_typ for s in route_rec_sels}
-                        if endpoint_types - {ONR_TYP_HP}:
+                        if not (endpoint_types - {ONR_TYP_HP}):
+                            raise ValueError(
+                                f"Trip {rec_frt.frt_fid} has effectively zero duration "
+                                f"({trip_duration.total_seconds():.3f}s)."
+                            )
+                        dep_name = stations_in_order[0].name.strip()
+                        arr_name = stations_in_order[-1].name.strip()
+                        # IVU.plan exports use the placeholder station "Private / Linienwagen"
+                        # for the depot end of dead-head connector trips. Without a synthetic
+                        # depot, these zero-duration connectors get dropped here, leaving the
+                        # rotation's first/last kept trip at a non-depot service station and
+                        # breaking the "rotation closes at a depot" invariant downstream.
+                        # We rebuild the trip as a 5-minute, 1000-m deadhead anchored to the
+                        # original frt_start: outbound (depot → service) arrives at frt_start
+                        # so it lines up with the first passenger departure; inbound (service →
+                        # depot) departs at frt_start so it lines up with the last passenger
+                        # arrival.
+                        LINIENWAGEN_NAME = "Private / Linienwagen"
+                        DEADHEAD_DURATION = timedelta(minutes=5)
+                        DEADHEAD_DISTANCE_M = 1000.0
+                        is_outbound = dep_name == LINIENWAGEN_NAME
+                        is_inbound = arr_name == LINIENWAGEN_NAME
+                        if is_outbound or is_inbound:
+                            n_stops = len(stations_in_order)
+                            base = rec_frt.frt_start - DEADHEAD_DURATION if is_outbound else rec_frt.frt_start
+                            step = DEADHEAD_DURATION / (n_stops - 1) if n_stops > 1 else timedelta(0)
+                            arrival_offsets = [base + step * i for i in range(n_stops)]
+                            dwell_durations = [timedelta(0)] * n_stops
+                            elapsed = arrival_offsets[-1]
+                            if is_outbound:
+                                rec_frt.frt_start = base
+                            # eflips.model invariant (Route.before_insert/before_update validator):
+                            # the first assoc_route_station.elapsed_distance must be 0 and the last
+                            # must equal route.distance. Redistribute evenly over [0, 1000] and set
+                            # route.distance to match exactly, avoiding any float-precision drift.
+                            sorted_ars = sorted(route.assoc_route_stations, key=lambda x: x.elapsed_distance)
+                            n_ars = len(sorted_ars)
+                            if n_ars >= 2:
+                                ars_step = DEADHEAD_DISTANCE_M / (n_ars - 1)
+                                for i, ars in enumerate(sorted_ars):
+                                    ars.elapsed_distance = DEADHEAD_DISTANCE_M if i == n_ars - 1 else ars_step * i
+                            route.distance = DEADHEAD_DISTANCE_M
+                            logger.info(
+                                f"Synthesised depot deadhead trip {rec_frt.frt_fid} "
+                                f"({dep_name!r} -> {arr_name!r}) as 5 min / 1000 m."
+                            )
+                            debug.log(
+                                "trip_synthesised_deadhead",
+                                frt_fid=rec_frt.frt_fid,
+                                direction="outbound" if is_outbound else "inbound",
+                                dep=dep_name,
+                                arr=arr_name,
+                                um_uid=rec_frt.um_uid,
+                            )
+                            # Fall through to the materialisation loop below.
+                        else:
                             logger.info(
                                 f"Skipping zero-duration non-revenue trip {rec_frt.frt_fid} "
-                                f"({stations_in_order[0].name.strip()!r} -> "
-                                f"{stations_in_order[-1].name.strip()!r})."
+                                f"({dep_name!r} -> {arr_name!r})."
+                            )
+                            debug.log(
+                                "trip_skipped",
+                                frt_fid=rec_frt.frt_fid,
+                                reason="zero_duration_non_revenue",
+                                um_uid=rec_frt.um_uid,
+                                tagesart_nr=rec_frt.tagesart_nr,
+                                dep=dep_name,
+                                arr=arr_name,
                             )
                             continue
-                        raise ValueError(
-                            f"Trip {rec_frt.frt_fid} has effectively zero duration "
-                            f"({trip_duration.total_seconds():.3f}s)."
-                        )
+
+                    # Floor each inter-stop step to >=1s (so two distinct stops never share a timestamp)
+                    # and, if the nominal SEL_FZT sum would have this trip arrive after the next trip on
+                    # its rotation departs, compress it to end exactly then. Both keep the materialised
+                    # rotation free of temporally overlapping trips.
+                    arrival_offsets, dwell_durations = normalize_trip_offsets(
+                        arrival_offsets,
+                        dwell_durations,
+                        rec_frt.frt_start,
+                        next_frt_start_by_fid.get(rec_frt.frt_fid),
+                    )
+                    elapsed = arrival_offsets[-1]
 
                     # Materialise the trip on every calendar day that matches the trip's day-type.
                     for fk in firmenkalenders_by_tagesart.get(rec_frt.tagesart_nr, []):
@@ -524,18 +831,87 @@ class VdvIngester(AbstractIngester):
 
                         trip.rotation = rotation
                         session.add(trip)
+                        debug.log(
+                            "trip_materialized",
+                            rotation_key=[rotation_key[0], rotation_key[1], rotation_key[2], the_date.isoformat()],
+                            frt_fid=rec_frt.frt_fid,
+                            route_key=list(route_key),
+                            dep_station_name=stations_in_order[0].name.strip(),
+                            arr_station_name=stations_in_order[-1].name.strip(),
+                            dep_station_pk_in_route=list(route_rec_sels[0].start_station_primary_key),
+                            arr_station_pk_in_route=list(route_rec_sels[-1].end_station_primary_key),
+                            departure_time=trip.departure_time.isoformat(),
+                            arrival_time=trip.arrival_time.isoformat(),
+                            fahrtart_nr=rec_frt.fahrtart_nr,
+                        )
 
                 # Drop rotations that ended up with no trips. Snapshot the collection first — deleting from
                 # the live collection while iterating can confuse the SQLAlchemy unit of work.
                 session.flush()
+
+                # ── Per-rotation post-mortem: compare what the VDV input claimed (anf_ort/end_ort
+                # on REC_UMLAUF) with what we actually assembled from the REC_FRT rows. This is the
+                # single most useful artefact for diagnosing "first dep ≠ last arr" failures
+                # downstream.
+                if debug.enabled:
+                    for rotation_key, rotation in rotations_by_vdv_pk_and_date.items():
+                        bv, tag, um, the_date = rotation_key
+                        orig = vdv_rotations_by_pk.get((bv, tag, um))
+                        trips_sorted = sorted(rotation.trips, key=lambda t: t.departure_time)
+                        trip_info = []
+                        for t in trips_sorted:
+                            dep_stop = t.stop_times[0] if t.stop_times else None
+                            arr_stop = t.stop_times[-1] if t.stop_times else None
+                            trip_info.append(
+                                {
+                                    "dep_station": dep_stop.station.name.strip() if dep_stop else None,
+                                    "arr_station": arr_stop.station.name.strip() if arr_stop else None,
+                                    "dep_time": t.departure_time.isoformat(),
+                                    "arr_time": t.arrival_time.isoformat(),
+                                    "route_id": id(t.route),
+                                }
+                            )
+                        first_dep = trip_info[0]["dep_station"] if trip_info else None
+                        actual_last_arr = trip_info[-1]["arr_station"] if trip_info else None
+                        # Find the station the VDV input claims as start/end (resolved via stations_by_vdv_pk).
+                        vdv_anf = (
+                            stations_by_vdv_pk[orig.start_station_primary_key].name.strip()
+                            if orig and orig.start_station_primary_key in stations_by_vdv_pk
+                            else None
+                        )
+                        vdv_end = (
+                            stations_by_vdv_pk[orig.end_station_primary_key].name.strip()
+                            if orig and orig.end_station_primary_key in stations_by_vdv_pk
+                            else None
+                        )
+                        debug.log(
+                            "rotation_built",
+                            rotation_key=[bv, tag, um, the_date.isoformat()],
+                            name=str(orig.um_uid) if orig else None,
+                            vdv_anf_station_pk=list(orig.start_station_primary_key) if orig else None,
+                            vdv_end_station_pk=list(orig.end_station_primary_key) if orig else None,
+                            vdv_anf_station_name=vdv_anf,
+                            vdv_end_station_name=vdv_end,
+                            actual_first_dep_station=first_dep,
+                            actual_last_arr_station=actual_last_arr,
+                            anf_matches=(vdv_anf == first_dep) if vdv_anf and first_dep else None,
+                            end_matches=(vdv_end == actual_last_arr) if vdv_end and actual_last_arr else None,
+                            trip_count=len(trip_info),
+                            trips=trip_info,
+                        )
+
                 for rotation in list(scenario.rotations):
                     if len(rotation.trips) == 0:
                         session.delete(rotation)
 
                 session.commit()
-            except Exception:
+                debug.log("ingest_complete")
+            except Exception as exc:
+                debug.log("ingest_failed", error=repr(exc))
                 session.rollback()
                 raise
+            finally:
+                debug.close()
 
     @classmethod
     def create_dummy_vehicle_type(cls, scenario: Scenario) -> VehicleType:
@@ -743,7 +1119,11 @@ def check_vdv451_file_header(abs_file_path: str) -> VDVTable:
                 if table_name_str is not None:
                     break
             elif command == "eof":
-                raise ValueError(f"The file {abs_file_path} does not contain any records.")
+                # File has no records, but its header may still be complete. Real IVU.plan exports
+                # routinely ship empty REC_FRT_HZT/ORT_HZTF tables (header + ``end; 0``); the
+                # downstream ingest code already handles the empty-record case, so treat an empty
+                # table as a valid (just empty) table rather than as a parsing failure.
+                break
 
     if table_name_str is None:
         msg = f"The file {abs_file_path} does not contain a table name in the header."
