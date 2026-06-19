@@ -920,7 +920,7 @@ class VdvIngester(AbstractIngester):
             name="Dummy Vehicle Type",
             opportunity_charging_capable=False,
             battery_capacity=10000,
-            charging_curve=[[0, 1], [1000, 1000]],
+            charging_curve=[[0, 1000], [1, 1000]],
         )
         return dummy_vehicle_type
 

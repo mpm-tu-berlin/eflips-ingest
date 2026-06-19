@@ -1393,7 +1393,7 @@ class MengeFzgTyp(VdvBaseObject):
         self,
         scenario: Scenario,
         battery_capacity: float = 1000,
-        charging_curve: List[List[float]] = [[0, 1], [150, 150]],
+        charging_curve: List[List[float]] = [[0, 150], [1, 150]],
         opportunity_charging_capable: bool = False,
     ) -> VehicleType:
         """
