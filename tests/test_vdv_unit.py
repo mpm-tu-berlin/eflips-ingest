@@ -253,6 +253,14 @@ class TestParseDatatypesExtra:
     def test_empty_input(self) -> None:
         assert parse_datatypes([]) == []
 
+    def test_junk_suffix_rejected(self) -> None:
+        # "num[9.0]junk" must not match as INT — regex must be fully anchored.
+        assert parse_datatypes(["num[9.0]junk"]) == [None]
+
+    def test_concatenated_tokens_rejected(self) -> None:
+        # Two valid-looking tokens concatenated must not be accepted as one.
+        assert parse_datatypes(["char[10]char[5]"]) == [None]
+
 
 # ---------------------------------------------------------------------------
 # check_vdv451_file_header — additional error paths

@@ -334,6 +334,13 @@ class TestVdvIngester(BaseIngester):
         success, result = ingester.prepare(progress_callback=None, x10_zip_file=prefixed)
         assert success is True
 
+    def test_prepare_zip_slip_rejected(self, ingester, tmp_path) -> None:
+        malicious = tmp_path / "malicious.zip"
+        with ZipFile(malicious, "w") as zf:
+            zf.writestr("../evil.x10", "x" * 10)
+        with pytest.raises(ValueError, match="[Zz]ip [Ss]lip"):
+            ingester.prepare(progress_callback=None, x10_zip_file=malicious)
+
     def test_prepare_validation_failure_returns_false(self, ingester, tmp_path) -> None:
         # A zip that passes zip-level validation but fails VDV 451 content check
         # (FAHRZEUG_valid.X10 has a valid header but is not a required table).

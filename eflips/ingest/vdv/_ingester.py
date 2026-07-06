@@ -349,13 +349,33 @@ class VdvIngester(AbstractIngester):
             members = zip_file.infolist()
             names = zip_file.namelist()
 
+            # Reject any entry whose raw name contains path-traversal components before
+            # any prefix stripping — the strip itself could otherwise launder a "../" prefix.
+            for name in names:
+                p = Path(name)
+                if p.is_absolute() or ".." in p.parts:
+                    raise ValueError(
+                        f"Zip entry {name!r} contains a path traversal component. "
+                        "Archive may be malicious (Zip Slip)."
+                    )
+
             # If every entry shares a single top-level folder prefix, strip it so files land at the root of out_dir.
             if names and all("/" in n for n in names) and len({n.split("/", 1)[0] for n in names}) == 1:
                 cut = len(names[0].split("/", 1)[0]) + 1
                 for m in members:
                     m.filename = m.filename[cut:]
 
-            zip_file.extractall(out_dir, [m for m in members if m.filename])
+            resolved_out = out_dir.resolve()
+            for m in members:
+                if not m.filename:
+                    continue
+                target = (resolved_out / m.filename).resolve()
+                if not target.is_relative_to(resolved_out):
+                    raise ValueError(
+                        f"Zip entry {m.filename!r} would extract outside the target directory. "
+                        "Archive may be malicious (Zip Slip)."
+                    )
+                zip_file.extract(m, out_dir)
 
         try:
             all_tables = validate_input_data_vdv_451(out_dir)
@@ -728,6 +748,10 @@ class VdvIngester(AbstractIngester):
                             # the first assoc_route_station.elapsed_distance must be 0 and the last
                             # must equal route.distance. Redistribute evenly over [0, 1000] and set
                             # route.distance to match exactly, avoiding any float-precision drift.
+                            # All values written here are derived solely from DEADHEAD_DISTANCE_M
+                            # (a constant) and n_ars (fixed by the route construction). Multiple
+                            # trips on the same route key write identical numbers, so this is safe
+                            # to repeat without a seen-set guard.
                             sorted_ars = sorted(route.assoc_route_stations, key=lambda x: x.elapsed_distance)
                             n_ars = len(sorted_ars)
                             if n_ars >= 2:
@@ -1154,10 +1178,9 @@ def check_vdv451_file_header(abs_file_path: str) -> VDVTable:
 
 # Permissible VDV 451 column-type literals are ``char[n]`` (string) and ``num[n.m]`` (numeric). ``num[n.0]`` is
 # integer, anything else is float. The dots are escaped so e.g. ``num[10x0]`` doesn't accidentally match int.
-_RE_VALID_FORMAT = re.compile(r"(char\[[0-9]+\]|num\[[0-9]+\.[0-9]+\])+")
-_RE_CHAR = re.compile(r"char\[[0-9]+\]")
-_RE_INT = re.compile(r"num\[[0-9]+\.0\]")
-_RE_FLOAT = re.compile(r"num\[[0-9]+\.[0-9]+\]")
+_RE_CHAR = re.compile(r"char\[[0-9]+\]$")
+_RE_INT = re.compile(r"num\[[0-9]+\.0\]$")
+_RE_FLOAT = re.compile(r"num\[[0-9]+\.[0-9]+\]$")
 
 
 def parse_datatypes(datatype_str: list[str]) -> list[Optional[VDV_Data_Type]]:
@@ -1171,13 +1194,6 @@ def parse_datatypes(datatype_str: list[str]) -> list[Optional[VDV_Data_Type]]:
     dtypes: list[Optional[VDV_Data_Type]] = []
     for raw in datatype_str:
         part = raw.lstrip()
-        if not _RE_VALID_FORMAT.match(part):
-            dtypes.append(None)
-            logger.warning(
-                f"Invalid datatype formatting in VDV 451 file: {part!r} does not match 'char[n]' or "
-                "'num[n.n]'. Column will not be imported."
-            )
-            continue
         if _RE_CHAR.match(part):
             dtypes.append(VDV_Data_Type.CHAR)
         elif _RE_INT.match(part):
@@ -1186,6 +1202,10 @@ def parse_datatypes(datatype_str: list[str]) -> list[Optional[VDV_Data_Type]]:
             dtypes.append(VDV_Data_Type.FLOAT)
         else:
             dtypes.append(None)
+            logger.warning(
+                f"Invalid datatype formatting in VDV 451 file: {part!r} does not match 'char[n]' or "
+                "'num[n.n]'. Column will not be imported."
+            )
 
     return dtypes
 
