@@ -54,7 +54,7 @@ class _DebugSink:
         if self.enabled:
             self.log("debug_session_start", pid=os.getpid())
 
-    def log(self, event: str, **fields) -> None:
+    def log(self, event: str, **fields: object) -> None:
         if not self.enabled:
             return
         assert self._fp is not None
@@ -649,8 +649,6 @@ class VdvIngester(AbstractIngester):
                     # against floating-point drift inside timedelta arithmetic.
                     trip_duration = elapsed - rec_frt.frt_start
 
-                    # TODO(overlap-debug): per-trip timing breakdown for diagnosing rotation overlaps.
-                    # Remove together with the rest of the overlap instrumentation once the bug is fixed.
                     if debug.enabled:
                         _stop_pks = [route_rec_sels[0].start_station_primary_key] + [
                             rs.end_station_primary_key for rs in route_rec_sels

@@ -22,11 +22,10 @@ PrimaryKey = Tuple[int | date | str, ...]
 
 _WGS84 = Geod(ellps="WGS84")
 
-
 def _geodesic_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """WGS84 geodesic distance between two points in meters (pyproj wraps geographiclib)."""
     _, _, distance = _WGS84.inv(lon1, lat1, lon2, lat2)
-    return distance
+    return float(distance)
 
 
 class RoutenArt(Enum):
@@ -1160,7 +1159,7 @@ class RecUmlauf(VdvBaseObject):
         """
         This key can be used to identify the start station by its primary key.
         """
-        return self.basis_version, self.anf_onr_typ, self.anf_ort if self.anf_ort is not None else None
+        return self.basis_version, self.anf_onr_typ, self.anf_ort
 
     end_ort: int
     """
@@ -1178,7 +1177,7 @@ class RecUmlauf(VdvBaseObject):
         """
         This key can be used to identify the end station by its primary key.
         """
-        return self.basis_version, self.end_onr_typ, self.end_ort if self.end_ort is not None else None
+        return self.basis_version, self.end_onr_typ, self.end_ort
 
     fzg_typ_nr: Optional[int]
     """
@@ -1237,7 +1236,13 @@ class RecUmlauf(VdvBaseObject):
                 raise ValueError("The vehicle type is not set and no dummy vehicle type is provided.")
             vehicle_type = dummy_vehicle_type
         else:
-            vehicle_type = vehicle_types_by_vdv_pk[(self.basis_version, self.fzg_typ_nr)]
+            pk = (self.basis_version, self.fzg_typ_nr)
+            if pk not in vehicle_types_by_vdv_pk:
+                raise ValueError(
+                    f"Rotation {self.um_uid!r} references FZG_TYP_NR={self.fzg_typ_nr!r} "
+                    f"(BASIS_VERSION={self.basis_version!r}) which is not in vehicle_types_by_vdv_pk."
+                )
+            vehicle_type = vehicle_types_by_vdv_pk[pk]
 
         return Rotation(
             scenario=scenario,
@@ -1374,8 +1379,6 @@ class MengeFzgTyp(VdvBaseObject):
 
         assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
         assert isinstance(data["FZG_TYP_NR"], int), "The `fzg_typ_nr` should be an integer."
-        assert isinstance(data["FZG_TYP_TEXT"], str), "The `fzg_typ_text` should be a string."
-        assert isinstance(data["STR_FZG_TYP"], str), "The `str_fzg_typ` should be a string."
 
         return MengeFzgTyp(
             basis_version=data["BASIS_VERSION"],
