@@ -10,26 +10,23 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import Enum
-from typing import Optional, Dict, Tuple, List
+from typing import Dict, List, Optional, Tuple
 
-from eflips.model import VehicleType, Scenario, Rotation, Line, Route, AssocRouteStation, Station
+from pyproj import Geod
 
-from eflips.model.util import get_altitude, geometry_has_z
+from eflips.model import AssocRouteStation, Line, Rotation, Route, Scenario, Station, VehicleType
+from eflips.model.util import geometry_has_z, get_altitude
+
+PrimaryKey = Tuple[int | date | str, ...]
+"""Type alias for the opaque tuple primary keys produced by VDV objects."""
+
+_WGS84 = Geod(ellps="WGS84")
 
 
-class OnrTyp(Enum):
-    """
-    The type of point in the schedule.
-    """
-
-    stop = "HP"
-    """
-    A bus stop.
-    """
-    depot_gate = "BHOF"
-    """
-    The entrance or exit of a depot. Trips that start or end here are (by definition) empty.
-    """
+def _geodesic_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """WGS84 geodesic distance between two points in meters (pyproj wraps geographiclib)."""
+    _, _, distance = _WGS84.inv(lon1, lat1, lon2, lat2)
+    return float(distance)
 
 
 class RoutenArt(Enum):
@@ -39,11 +36,11 @@ class RoutenArt(Enum):
     ZUFAHRT = 4
 
 
-@dataclass
+@dataclass(kw_only=True)
 class VdvBaseObject(ABC):
     basis_version: int
     """
-    The `BasisVerGueltigkeit.basis_version` this object belongs to. Currently not used. 
+    The `BasisVerGueltigkeit.basis_version` this object belongs to. Currently not used.
 
     Later, it may be a good idea to allow the user to select a version of the schedule to import.
 
@@ -52,7 +49,7 @@ class VdvBaseObject(ABC):
 
     @property
     @abstractmethod
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         """
         The primary key of the object.
         """
@@ -67,44 +64,20 @@ class VdvBaseObject(ABC):
         pass
 
 
-@dataclass
+@dataclass(kw_only=True)
 class VdvBaseObjectWithONR(VdvBaseObject):
     """
-    This is a parent class for all objects that have an `onr_typ_nr` attribute.
+    Parent class for all objects that carry an ``onr_typ_nr`` / ``ort_nr`` pair.
     """
 
     onr_typ_nr: int
-    """
-    This is a freign key to the `ONR_TYP_NR` in the MENGE_ONR_TYP table. The `STR_ONR_TYP` in this table is the type
-    of point we are dealing with. 
-
-    We just note the ID down on initializtion, however to be able to use it, we also will need to set the 
-    `_onr_type_map` dictionary attribute of this object.
-
-    Restriction: Should be a positive integer.
-    """
-
-    # _onr_type_map: Dict[int, OnrTyp]
-    """
-    A dictionary that maps the `onr_typ_nr` to the `OnrTyp` enum.
-    """
-
-    # @property
-    # def onr_typ(self) -> OnrTyp:
-    #    """
-    #    The type of point in the schedule.
-    #    """
-    #    return self._onr_type_map[self.onr_typ_nr]
+    """Foreign key to ``ONR_TYP_NR`` in MENGE_ONR_TYP. Restriction: positive integer."""
 
     ort_nr: int
-    """
-    This seems to be a dupllicate of `onr_typ_nr`. We do store it, but we do not use it.
-
-    Restriction: Should be a positive integer.
-    """
+    """Duplicate of ``onr_typ_nr``; stored but not used. Restriction: positive integer."""
 
 
-@dataclass
+@dataclass(kw_only=True)
 class BasisVerGueltigkeit(VdvBaseObject):
     """
     The dataclass corresponding to BASIS_VER_GUELTIGKEIT (993) in the VDV-452 specification.
@@ -142,11 +115,8 @@ class BasisVerGueltigkeit(VdvBaseObject):
         return BasisVerGueltigkeit(ver_gueltigkeit=date(year, month, day), basis_version=data["BASIS_VERSION"])
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
-        """
-        The primary key of the object. Used e.g. to store it in a dictionary.
-        :return:
-        """
+    def primary_key(self) -> PrimaryKey:
+        """The primary key of the object. Used e.g. to store it in a dictionary."""
         return (self.ver_gueltigkeit,)
 
     def __eq__(self: "BasisVerGueltigkeit", other: object) -> bool:
@@ -202,15 +172,12 @@ class Firmenkalender(VdvBaseObject):
         )
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
-        """
-        The primary key of the object. Used e.g. to store it in a dictionary.
-        :return:
-        """
+    def primary_key(self) -> PrimaryKey:
+        """The primary key of the object. Used e.g. to store it in a dictionary."""
         return self.basis_version, self.betriebstag
 
 
-@dataclass
+@dataclass(kw_only=True)
 class LidVerlauf(VdvBaseObjectWithONR):
     """
     The dataclass corresponding to LID_VERLAUF (246) in the VDV-452 specification.
@@ -219,40 +186,23 @@ class LidVerlauf(VdvBaseObjectWithONR):
     world.
     """
 
-    @property
-    def position_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the station by its primary key.
-        """
-        return self.basis_version, self.onr_typ_nr, self.ort_nr
-
     li_lfd_nr: int
-    """
-    The ordinal number of the line this object belongs to. 
-    
-    Restriction: Should be a positive integer.
-    """
+    """The ordinal number of the line this object belongs to. Restriction: positive integer."""
 
     li_nr: int
-    """
-    The "line number", which most closely corresponds to the `Line.name` in the eflips-model world.
-    
-    Restriction: Should be a six-character string.
-    """
+    """The "line number", most closely corresponding to ``Line.name``. Restriction: six-character string."""
 
     str_li_var: str
-    """
-    An identifier for the line variant. TODO: Unclear at this point whether this is a route name?
-    
-    Restriction: Should be a six-character string.
-    """
+    """Identifier for the line variant. TODO: clarify whether this is the route name."""
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
-        """
-        The primary key of the object. Used e.g. to store it in a dictionary.
-        :return:
-        """
+    def position_key(self) -> Tuple[int, int, int]:
+        """This key can be used to identify the station by its primary key."""
+        return self.basis_version, self.onr_typ_nr, self.ort_nr
+
+    @property
+    def primary_key(self) -> PrimaryKey:
+        """The primary key of the object. Used e.g. to store it in a dictionary."""
         return self.basis_version, self.li_nr, self.str_li_var, self.li_lfd_nr
 
     @classmethod
@@ -294,24 +244,25 @@ class LidVerlauf(VdvBaseObjectWithONR):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class OrtHztf(VdvBaseObjectWithONR):
     """
-    ORT_HZTF (999) Stores the dwell duration at a stop for a trip. It is most equivalent to the `StopTime.dwell_duration`
+    ORT_HZTF (999) stores the default dwell duration at a stop for a timing group. Most equivalent to
+    ``StopTime.dwell_duration``.
     """
 
     fgr_nr: int
     """The number of the timing group. Part of primary key."""
 
-    @property
-    def position_key(self) -> Tuple[int, int, int]:
-        return self.basis_version, self.onr_typ_nr, self.ort_nr
-
     hp_hzt: timedelta
     """The time the trip waits at the stop in seconds."""
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def position_key(self) -> Tuple[int, int, int]:
+        return self.basis_version, self.onr_typ_nr, self.ort_nr
+
+    @property
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.fgr_nr, self.onr_typ_nr, self.ort_nr
 
     @classmethod
@@ -331,28 +282,26 @@ class OrtHztf(VdvBaseObjectWithONR):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class RecFrtHzt(VdvBaseObjectWithONR):
     """
-
-    REC_FRT_HZT (308) stores the waiting time at a stop for a trip. It is most equivalent to the
-    `StopTime.dwell_duration`
-
+    REC_FRT_HZT (308) stores the per-trip override dwell at a stop. Most equivalent to
+    ``StopTime.dwell_duration``.
     """
 
     frt_fid: int
-    """The Identifier of the trip. Part of primary key."""
+    """The identifier of the trip. Part of primary key."""
+
+    frt_hzt_zeit: timedelta
+    """The time the trip waits at the stop in seconds."""
 
     @property
     def position_key(self) -> Tuple[int, int, int]:
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.frt_fid, self.onr_typ_nr, self.ort_nr
-
-    frt_hzt_zeit: timedelta
-    """The time the trip waits at the stop in seconds."""
 
     @classmethod
     def from_dict(cls, data: Dict[str, str | int | float | None]) -> "RecFrtHzt":
@@ -371,55 +320,35 @@ class RecFrtHzt(VdvBaseObjectWithONR):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SelFztFeld(VdvBaseObjectWithONR):
-    """
-
-    SEL_FZT_FELD (282) stores the timing information for a segment of a route. It is a part of a route.
-
-    """
+    """SEL_FZT_FELD (282) stores the timing information for a segment of a route."""
 
     bereich_nr: int
-    """
-    The identifier of the area. Part of primary key.
-    """
+    """The identifier of the area. Part of primary key."""
 
     fgr_nr: int
-    """
-    The name of the timing group number this trip belongs to. Used to look up the timing group.
-    """
+    """The timing group number this segment belongs to."""
+
+    sel_ziel: int
+    """The identifier of the target point."""
+
+    sel_ziel_typ: int
+    """The type of the target point."""
+
+    sel_fzt: timedelta
+    """The time it takes to travel from the start to the end."""
 
     @property
     def start_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.onr_typ_nr, self.ort_nr
-
-    sel_ziel: int
-    """
-    The identifier of the target point.
-    """
-
-    sel_ziel_typ: int
-    """
-    The type of the target point.
-    """
 
     @property
     def end_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.sel_ziel_typ, self.sel_ziel
 
-    sel_fzt: timedelta
-    """
-    The time it takes to travel from the start to the end in seconds.
-    """
-
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return (
             self.basis_version,
             self.bereich_nr,
@@ -453,48 +382,31 @@ class SelFztFeld(VdvBaseObjectWithONR):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class UebFzt(VdvBaseObjectWithONR):
-    """
-
-    This is a timing specific for empty trips. It is a part of a route.
-
-    """
+    """Timing for empty trips between two stops."""
 
     bereich_nr: int
-    """
-    An identifier of the area. Part of primary key.    
-    """
+    """An identifier of the area. Part of primary key."""
 
     fgr_nr: int
-    """
-    To which timing group this belongs.
-    """
+    """Timing group this belongs to."""
+
+    ueb_ziel_typ: int
+    """Type of the target point. Part of primary key."""
+
+    ueb_ziel: int
+    """Identifier of the target point. Part of primary key."""
+
+    ueb_fahrzeit: timedelta
+    """Time it takes to travel from the start to the end."""
 
     @property
     def start_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
-    ueb_ziel_typ: int
-    """
-    The type of the target point. Part of primary key.
-    """
-
-    ueb_ziel: int
-    """
-    The identifier of the target point. Part of primary key.
-    """
-
-    ueb_fahrzeit: timedelta
-    """
-    The time it takes to travel from the start to the end in seconds.
-    """
-
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return (
             self.basis_version,
             self.bereich_nr,
@@ -528,7 +440,7 @@ class UebFzt(VdvBaseObjectWithONR):
         )
 
 
-@dataclass()
+@dataclass(kw_only=True)
 class RecFrt(VdvBaseObject):
     """
     This seems to be the equivalent of a trip in the eflips-model world. It is a trip that is part of a line.
@@ -575,7 +487,7 @@ class RecFrt(VdvBaseObject):
     """
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.frt_fid
 
     @classmethod
@@ -627,7 +539,7 @@ class RecFrt(VdvBaseObject):
         )
 
 
-@dataclass()
+@dataclass(kw_only=True)
 class RecOrt(VdvBaseObjectWithONR):
     """
     A place. For us, it's mainly interesting if we turn it into a Station object.
@@ -681,7 +593,7 @@ class RecOrt(VdvBaseObjectWithONR):
         return self.basis_version, self.ort_ref_ort, self.ort_ref_ort_typ
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.onr_typ_nr, self.ort_nr
 
     @classmethod
@@ -691,10 +603,10 @@ class RecOrt(VdvBaseObjectWithONR):
         """
 
         if "WGS_XKOOR" in data:
-            assert isinstance(data["WGS_XKOOR"], float), "The `WGS_XKOOR` should be a float."
+            assert isinstance(data["WGS_XKOOR"], (int, float)), "The `WGS_XKOOR` should be numeric."
             assert data["WGS_XKOOR"] != 0, "The `WGS_XKOOR` should not be 0."
-            longitude: Optional[float] = data["WGS_XKOOR"]
-        elif "ORT_POS_LAENGE" in data and data["ORT_POS_LAENGE"] != 0:
+            longitude: Optional[float] = float(data["WGS_XKOOR"])
+        elif "ORT_POS_LAENGE" in data and data["ORT_POS_LAENGE"] not in (None, 0):
             # According to spec: Latitude in WGS 84 Format:
             # gggmmssnnn (Gradzahl, Minuten,
             # Sekunden mit 3
@@ -719,10 +631,10 @@ class RecOrt(VdvBaseObjectWithONR):
             longitude = None
 
         if "WGS_YKOOR" in data:
-            assert isinstance(data["WGS_YKOOR"], float), "The `WGS_YKOOR` should be a float."
+            assert isinstance(data["WGS_YKOOR"], (int, float)), "The `WGS_YKOOR` should be numeric."
             assert data["WGS_YKOOR"] != 0, "The `WGS_YKOOR` should not be 0."
-            latitude: Optional[float] = data["WGS_YKOOR"]
-        elif "ORT_POS_BREITE" in data and data["ORT_POS_BREITE"] != 0:
+            latitude: Optional[float] = float(data["WGS_YKOOR"])
+        elif "ORT_POS_BREITE" in data and data["ORT_POS_BREITE"] not in (None, 0):
             # According to Spec:
             # Longitude in WGS 84 Format:
             # gggmmssnnn (Gradzahl, Minuten,
@@ -747,7 +659,7 @@ class RecOrt(VdvBaseObjectWithONR):
         else:
             latitude = None
 
-        if "ORT_POS_HOEHE" in data:
+        if "ORT_POS_HOEHE" in data and data["ORT_POS_HOEHE"] is not None:
             assert isinstance(data["ORT_POS_HOEHE"], int), "The `ORT_POS_HOEHE` should be an integer."
             altitude: int | None = data["ORT_POS_HOEHE"]
         else:
@@ -760,14 +672,23 @@ class RecOrt(VdvBaseObjectWithONR):
         assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
         assert isinstance(data["ORT_NR"], int), "The `ort_nr` should be an integer."
         assert isinstance(data["ORT_NAME"], str), "The `ort_name` should be a string."
-        assert isinstance(data["ORT_REF_ORT"], int), "The `ort_ref_ort` should be an integer."
-        assert isinstance(data["ORT_REF_ORT_TYP"], int), "The `ort_ref_ort_typ` should be an integer."
+        # ORT_REF_ORT / ORT_REF_ORT_TYP point at the parent "logical" station that groups several
+        # physical positions. Standalone places (e.g. depot waypoints with ONR_TYP_NR=6) have these
+        # blank in the source file, in which case the parser delivers None.
+        assert data["ORT_REF_ORT"] is None or isinstance(
+            data["ORT_REF_ORT"], int
+        ), "The `ort_ref_ort` should be an integer or None."
+        assert data["ORT_REF_ORT_TYP"] is None or isinstance(
+            data["ORT_REF_ORT_TYP"], int
+        ), "The `ort_ref_ort_typ` should be an integer or None."
         if data["ORT_REF_ORT_KUERZEL"] is not None:
             assert isinstance(data["ORT_REF_ORT_KUERZEL"], str), "The `ort_ref_ort_kuerzel` should be a string."
             ort_ref_ort_kuerzel = data["ORT_REF_ORT_KUERZEL"]
         else:
             ort_ref_ort_kuerzel = None
-        assert isinstance(data["ORT_REF_ORT_NAME"], str), "The `ort_ref_ort_name` should be a string."
+        assert data["ORT_REF_ORT_NAME"] is None or isinstance(
+            data["ORT_REF_ORT_NAME"], str
+        ), "The `ort_ref_ort_name` should be a string or None."
 
         return RecOrt(
             basis_version=data["BASIS_VERSION"],
@@ -784,118 +705,88 @@ class RecOrt(VdvBaseObjectWithONR):
         )
 
     @classmethod
-    def list_of_stations(
-        cls, rec_orts: List["RecOrt"], scenario: Scenario
-    ) -> Dict[Tuple[int | date | str, ...], Station]:
+    def list_of_stations(cls, rec_orts: List["RecOrt"], scenario: Scenario) -> Dict[PrimaryKey, Station]:
         """
         Extract all the stations from the RecOrt objects. They are the "ref_ort" places, that only exist by
-        reference to the actual stops
+        reference to the actual stops.
+
         :param rec_orts: A list of RecOrt objects.
-        :return: A Dict of stations, by their VDV primary key. The dict may contain the same station multiple times.
+        :return: A dict of stations keyed by their VDV primary key. The dict may contain the same station multiple
+            times under different keys.
         """
 
-        rec_orts_by_ref_ort: Dict[int, List["RecOrt"]] = {}
+        # Group by parent ref. Rows without a parent (standalone places like depot waypoints)
+        # form their own singleton group keyed by their own primary key, so they each become a
+        # standalone Station rather than being merged or dropped.
+        rec_orts_by_ref_ort: Dict[PrimaryKey, List["RecOrt"]] = {}
         for rec_ort in rec_orts:
-            assert rec_ort.ort_ref_ort is not None, "The `ort_ref_or` should not be None."
-            if rec_ort.ort_ref_ort not in rec_orts_by_ref_ort:
-                rec_orts_by_ref_ort[rec_ort.ort_ref_ort] = []
-            rec_orts_by_ref_ort[rec_ort.ort_ref_ort].append(rec_ort)
-
-        stations: Dict[Tuple[int | date | str, ...], Station] = {}
-        # For each station (the stops that share the same rec_ort_kuerzel) we create an eflip-model Station object
-        for rec_ort_ref_ort, rec_orts in rec_orts_by_ref_ort.items():
-            if rec_orts[0].ort_ref_ort_name is not None:
-                name = rec_orts[0].ort_ref_ort_name
+            if rec_ort.ort_ref_ort is None:
+                group_key: PrimaryKey = rec_ort.primary_key
             else:
-                # The name is the most used one of the ort_name fields
-                # Count how many times each name appears
-                name_counts = Counter([rec_ort.ort_name for rec_ort in rec_orts])
+                group_key = (rec_ort.ort_ref_ort,)
+            rec_orts_by_ref_ort.setdefault(group_key, []).append(rec_ort)
+
+        stations: Dict[PrimaryKey, Station] = {}
+        for grouped_rec_orts in rec_orts_by_ref_ort.values():
+            first = grouped_rec_orts[0]
+            if first.ort_ref_ort_name is not None:
+                name = first.ort_ref_ort_name
+            else:
+                # Pick the most common ort_name across the group.
+                name_counts = Counter(r.ort_name for r in grouped_rec_orts)
                 name = name_counts.most_common(1)[0][0]
 
-            if (
-                all([rec_ort.latitude is not None for rec_ort in rec_orts])
-                and all([rec_ort.longitude is not None for rec_ort in rec_orts])
-                and all([rec_ort.altitude is not None for rec_ort in rec_orts])
-            ):
-                # The latitude and longitude are the average of the coordinates
-                latitude = sum([rec_ort.latitude for rec_ort in rec_orts if rec_ort.latitude is not None]) / len(
-                    rec_orts
-                )
-                longitude = sum([rec_ort.longitude for rec_ort in rec_orts if rec_ort.longitude is not None]) / len(
-                    rec_orts
-                )
-                if geometry_has_z():
-                    # The altitude is the average of the altitudes
-                    altitude = sum([rec_ort.altitude for rec_ort in rec_orts if rec_ort.altitude is not None]) / len(
-                        rec_orts
-                    )
+            has_coords = all(r.latitude is not None and r.longitude is not None for r in grouped_rec_orts)
+            has_altitude = has_coords and all(r.altitude is not None for r in grouped_rec_orts)
 
-                if geometry_has_z():
-                    geom = f"POINTZ({longitude} {latitude} {altitude})"
+            if has_coords:
+                n = len(grouped_rec_orts)
+                latitude = sum(r.latitude for r in grouped_rec_orts) / n  # type: ignore[misc]
+                longitude = sum(r.longitude for r in grouped_rec_orts) / n  # type: ignore[misc]
+                if geometry_has_z() and has_altitude:
+                    altitude = sum(r.altitude for r in grouped_rec_orts) / n  # type: ignore[misc]
+                    geom: Optional[str] = f"POINTZ({longitude} {latitude} {altitude})"
                 else:
                     geom = f"POINT({longitude} {latitude})"
             else:
                 geom = None
 
-            # The short name is the kuezel field, if it exists
-            if rec_orts[0].ort_ref_ort_kuerzel is not None:
-                short_name = rec_orts[0].ort_ref_ort_kuerzel
-            else:
-                short_name = None
+            short_name = first.ort_ref_ort_kuerzel
 
             station = Station(scenario=scenario, name=name, name_short=short_name, geom=geom, is_electrified=False)
 
-            for rec_ort in rec_orts:
+            for rec_ort in grouped_rec_orts:
                 stations[rec_ort.primary_key] = station
 
         return stations
 
 
-@dataclass()
+@dataclass(kw_only=True)
 class RecSel(VdvBaseObjectWithONR):
-    """
-
-    This is the segment of a route between two stops. It is a part of a route. The route's distance can be calculated
-    from it.
-
-    """
+    """The segment of a route between two stops. The route's distance is the sum of its segments."""
 
     bereich_nr: int
-    """
-    An identifier of the area. Part of primary key.
-    """
+    """An identifier of the area. Part of primary key."""
+
+    sel_ziel: int
+    """The identifier of the target point."""
+
+    sel_ziel_typ: int
+    """The type of the target point."""
+
+    sel_laenge: Optional[int]
+    """The length of the element in meters."""
 
     @property
     def start_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.onr_typ_nr, self.ort_nr
-
-    sel_ziel: int
-    """
-    The identifier of the target point.
-    """
-
-    sel_ziel_typ: int
-    """
-    The type of the target point.
-    """
 
     @property
     def end_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.sel_ziel_typ, self.sel_ziel
 
-    sel_laenge: Optional[int]
-    """
-    The length of the element in meters.
-    """
-
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return (
             self.basis_version,
             self.bereich_nr,
@@ -942,61 +833,38 @@ class RecSel(VdvBaseObjectWithONR):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class RecUeb(VdvBaseObject):
-    """
-    REC_UEB (225) stores "Überlaäuferfahrten", which afaik are what we would call empty trips.
-
-    So this is a route, on which only an empty trip is possible.
-
-    """
+    """REC_UEB (225) stores "Überläuferfahrten" — routes on which only an empty trip is possible."""
 
     bereich_nr: int
-    """
-    Identifies a branch. Part of primary key.
-    """
+    """Identifies a branch. Part of primary key."""
 
     onr_typ_nr: int
-    """
-    Type of the departure point. Part of primary key.
-    """
+    """Type of the departure point. Part of primary key."""
 
     ort_nr: int
-    """
-    Identifier of the departure point. Part of primary key.
-    """
+    """Identifier of the departure point. Part of primary key."""
+
+    ueb_ziel_typ: int
+    """Type of the target point. Part of primary key."""
+
+    ueb_ziel: int
+    """Identifier of the target point. Part of primary key."""
+
+    ueb_laenge: Optional[int]
+    """Distance in meters."""
 
     @property
     def start_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.onr_typ_nr, self.ort_nr
-
-    ueb_ziel_typ: int
-    """
-    Type of the target point. Part of primary key.
-    """
-
-    ueb_ziel: int
-    """
-    The identifier of the target point. Part of primary key.
-    """
 
     @property
     def end_station_primary_key(self) -> Tuple[int, int, int]:
-        """
-        This key can be used to identify the start station by its primary key.
-        """
         return self.basis_version, self.ueb_ziel_typ, self.ueb_ziel
 
-    ueb_laenge: Optional[int]
-    """
-    Distance in meters.
-    """
-
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.bereich_nr, self.onr_typ_nr, self.ort_nr, self.ueb_ziel_typ, self.ueb_ziel
 
     def to_route(
@@ -1042,10 +910,10 @@ class RecUeb(VdvBaseObject):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class RecLid(VdvBaseObject):
     """
-    This is probably equivalent ot what we call a "Route" in efhlips-model
+    This is probably equivalent to what we call a "Route" in eflips-model.
     """
 
     li_nr: int
@@ -1079,7 +947,7 @@ class RecLid(VdvBaseObject):
     """
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.li_nr, self.str_li_var
 
     @classmethod
@@ -1121,10 +989,10 @@ class RecLid(VdvBaseObject):
     def to_route(
         self,
         scenario: Scenario,
-        lines_by_basis_version_andli_nr: Dict[Tuple[int | date | str, ...], Line],
+        lines_by_basis_version_and_li_nr: Dict[PrimaryKey, Line],
         rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[Tuple[int, int, int], RecOrt],
         lid_verlaufs_by_basis_version_and_li_nr_and_str_li_var: Dict[Tuple[int, int, str], List[LidVerlauf]],
-        stations_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[Tuple[int | date | str, ...], Station],
+        stations_by_basis_version_and_onr_typ_nr_and_ort_nr: Dict[PrimaryKey, Station],
         rec_sel_by_basis_version_and_start_type_and_start_nr_and_end_type_and_end_nr: Dict[
             Tuple[int, int, int, int, int], RecSel
         ],
@@ -1132,69 +1000,127 @@ class RecLid(VdvBaseObject):
         """
         Convert to a route.
 
-        :param scenario: The scenario to associate the route with
-        :return: An instance of the Route class
+        :param scenario: The scenario to associate the route with.
+        :return: A tuple ``(route, rec_sels)`` — the constructed Route plus the ordered list of segments
+            traversed, which the caller needs to derive per-trip timings.
         """
         logger = logging.getLogger(__name__)
 
         route = Route(
             scenario=scenario,
-            line=lines_by_basis_version_andli_nr[(self.basis_version, self.li_nr)],
+            line=lines_by_basis_version_and_li_nr[(self.basis_version, self.li_nr)],
             name=self.lidname,
         )
-
-        assoc_route_stations: List[AssocRouteStation] = []
 
         this_routes_lid_verlaufs = lid_verlaufs_by_basis_version_and_li_nr_and_str_li_var[
             (self.basis_version, self.li_nr, self.str_li_var)
         ]
-        elapsed_distance = 0
-        rec_sels = []
-        for i in range(len(this_routes_lid_verlaufs)):
-            this_lid_verlauf = this_routes_lid_verlaufs[i]
 
-            this_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
-            if this_rec_ort.latitude is None or this_rec_ort.longitude is None:
-                logger.debug(f"Encountered a station without coordinates: {this_rec_ort}")
-                location = None
-            else:
-                if geometry_has_z() and this_rec_ort.altitude is not None:
-                    location = f"POINTZ({this_rec_ort.longitude} {this_rec_ort.latitude} {this_rec_ort.altitude})"
-                else:
-                    location = f"POINT({this_rec_ort.longitude} {this_rec_ort.latitude})"
-
+        # Collapse runs of consecutive LID_VERLAUF entries that resolve to the *same* Station object.
+        # VDV routes routinely list one place twice in a row -- e.g. an operational/service point and the
+        # passenger Haltepunkt, which are two REC_ORT children of a single ORT_REF_ORT and are therefore
+        # grouped into one Station -- joined by a zero-length, zero-SEL_FZT segment. In the eflips-model
+        # these are a single stop; keeping both produced a duplicate AssocRouteStation/StopTime pair that
+        # shared an arrival timestamp, which downstream timestamp-spreading then shoved past the
+        # neighbouring trip's start, manifesting as temporally overlapping rotations. Each run collapses
+        # to one node; the segment between two nodes is the original REC_SEL from the *last* entry of the
+        # previous run to the *first* entry of the next run, so every retained segment still exists in
+        # REC_SEL (this matters for the rare runs that occur mid-route, not just at the start/end).
+        runs: List[List[LidVerlauf]] = []
+        for this_lid_verlauf in this_routes_lid_verlaufs:
             this_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[this_lid_verlauf.position_key]
+            if runs and (stations_by_basis_version_and_onr_typ_nr_and_ort_nr[runs[-1][0].position_key] is this_station):
+                runs[-1].append(this_lid_verlauf)
+            else:
+                runs.append([this_lid_verlauf])
 
-            assoc = AssocRouteStation(
-                scenario=scenario,
-                route=route,
-                station=this_station,
-                location=location,
-                elapsed_distance=elapsed_distance,
+        assoc_route_stations: List[AssocRouteStation] = []
+        rec_sels: List[RecSel] = []
+        elapsed_distance = 0
+        rep_rec_ort: RecOrt
+        rep_station: Station
+
+        for i, run in enumerate(runs):
+            rep_lid_verlauf = run[0]
+            rep_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[rep_lid_verlauf.position_key]
+            rep_station = stations_by_basis_version_and_onr_typ_nr_and_ort_nr[rep_lid_verlauf.position_key]
+
+            if rep_rec_ort.latitude is None or rep_rec_ort.longitude is None:
+                logger.debug(f"Encountered a station without coordinates: {rep_rec_ort}")
+                location: Optional[str] = None
+            elif geometry_has_z() and rep_rec_ort.altitude is not None:
+                location = f"POINTZ({rep_rec_ort.longitude} {rep_rec_ort.latitude} {rep_rec_ort.altitude})"
+            else:
+                location = f"POINT({rep_rec_ort.longitude} {rep_rec_ort.latitude})"
+
+            assoc_route_stations.append(
+                AssocRouteStation(
+                    scenario=scenario,
+                    route=route,
+                    station=rep_station,
+                    location=location,
+                    elapsed_distance=elapsed_distance,
+                )
             )
-            assoc_route_stations.append(assoc)
 
             if i == 0:
-                route.departure_station = this_station
+                route.departure_station = rep_station
 
-            if i < len(this_routes_lid_verlaufs) - 1:
+            if i < len(runs) - 1:
+                # The connecting segment runs from the last entry of this run to the first entry of the
+                # next run -- both are adjacent in the original LID_VERLAUF, so the REC_SEL exists.
+                seg_start_lid_verlauf = run[-1]
+                seg_end_lid_verlauf = runs[i + 1][0]
+                seg_start_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[
+                    seg_start_lid_verlauf.position_key
+                ]
+                seg_end_rec_ort = rec_orts_by_basis_version_and_onr_typ_nr_and_ort_nr[seg_end_lid_verlauf.position_key]
                 this_rec_sel = rec_sel_by_basis_version_and_start_type_and_start_nr_and_end_type_and_end_nr[
                     (
                         self.basis_version,
-                        this_lid_verlauf.onr_typ_nr,
-                        this_lid_verlauf.ort_nr,
-                        this_routes_lid_verlaufs[i + 1].onr_typ_nr,
-                        this_routes_lid_verlaufs[i + 1].ort_nr,
+                        seg_start_lid_verlauf.onr_typ_nr,
+                        seg_start_lid_verlauf.ort_nr,
+                        seg_end_lid_verlauf.onr_typ_nr,
+                        seg_end_lid_verlauf.ort_nr,
                     )
                 ]
                 rec_sels.append(this_rec_sel)
-                if this_rec_sel.sel_laenge is None or this_rec_sel.sel_laenge == 0:
-                    logger.debug(f"Encountered a segment without length: {this_rec_sel.primary_key}")
-                    # put a default value
-                    elapsed_distance += 1
-                else:
+
+                if this_rec_sel.sel_laenge is not None and this_rec_sel.sel_laenge > 0:
                     elapsed_distance += this_rec_sel.sel_laenge
-        route.arrival_station = this_station
+                else:
+                    have_coords = (
+                        seg_start_rec_ort.latitude is not None
+                        and seg_start_rec_ort.longitude is not None
+                        and seg_end_rec_ort.latitude is not None
+                        and seg_end_rec_ort.longitude is not None
+                    )
+                    if have_coords:
+                        estimated = _geodesic_distance_m(
+                            seg_start_rec_ort.latitude,  # type: ignore[arg-type]
+                            seg_start_rec_ort.longitude,  # type: ignore[arg-type]
+                            seg_end_rec_ort.latitude,  # type: ignore[arg-type]
+                            seg_end_rec_ort.longitude,  # type: ignore[arg-type]
+                        )
+                        logger.debug(
+                            f"Estimating segment length via WGS84 geodesic: {estimated:.1f} m for "
+                            f"{this_rec_sel.primary_key}"
+                        )
+                        elapsed_distance += int(round(estimated))
+                    elif this_rec_sel.sel_laenge is not None:
+                        # No coords available to estimate; trust the literal SEL_LAENGE (likely 0).
+                        logger.warning(
+                            f"Segment {this_rec_sel.primary_key} has SEL_LAENGE={this_rec_sel.sel_laenge} and "
+                            "no endpoint coordinates for a geodesic fallback; using the literal value."
+                        )
+                        elapsed_distance += this_rec_sel.sel_laenge
+                    else:
+                        raise ValueError(
+                            f"Route {self.primary_key}: segment {this_rec_sel.primary_key} has no SEL_LAENGE "
+                            "and at least one endpoint lacks coordinates for the geodesic fallback."
+                        )
+
+        route.arrival_station = rep_station
         route.distance = elapsed_distance
         route.assoc_route_stations = assoc_route_stations
 
@@ -1234,7 +1160,7 @@ class RecUmlauf(VdvBaseObject):
         """
         This key can be used to identify the start station by its primary key.
         """
-        return self.basis_version, self.anf_onr_typ, self.anf_ort if self.anf_ort is not None else None
+        return self.basis_version, self.anf_onr_typ, self.anf_ort
 
     end_ort: int
     """
@@ -1252,7 +1178,7 @@ class RecUmlauf(VdvBaseObject):
         """
         This key can be used to identify the end station by its primary key.
         """
-        return self.basis_version, self.end_onr_typ, self.end_ort if self.end_ort is not None else None
+        return self.basis_version, self.end_onr_typ, self.end_ort
 
     fzg_typ_nr: Optional[int]
     """
@@ -1260,7 +1186,7 @@ class RecUmlauf(VdvBaseObject):
     """
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.tagesart_nr, self.um_uid
 
     @classmethod
@@ -1293,17 +1219,17 @@ class RecUmlauf(VdvBaseObject):
     def to_rotation(
         self,
         scenario: Scenario,
-        db_vehicle_types_by_vdv_pk: Dict[Tuple[int | date | str, ...], VehicleType],
+        vehicle_types_by_vdv_pk: Dict[PrimaryKey, VehicleType],
         allow_opportunity_charging: bool = False,
         dummy_vehicle_type: Optional[VehicleType] = None,
     ) -> Rotation:
         """
-        Converts to a database rotation object.
-        :param db_vehicle_types_by_vdv_pk: A dictionary of already-imported vehicle type objects by their VDV-style
-        primary key, which is defined as BASIS_VERSION + FZG_TYPE_NR
+        Convert to a database rotation object.
+
+        :param vehicle_types_by_vdv_pk: Already-imported vehicle types keyed by their VDV primary key
+            ``(BASIS_VERSION, FZG_TYP_NR)``.
         :param allow_opportunity_charging: Whether the vehicle is allowed to charge opportunistically.
-        :param dummy_vehicle_type: A vehicle type to use if the vehicle type is not found in the dictionary.
-        :return:
+        :param dummy_vehicle_type: Vehicle type to use if this rotation has no associated ``FZG_TYP_NR``.
         """
 
         if self.fzg_typ_nr is None:
@@ -1311,7 +1237,13 @@ class RecUmlauf(VdvBaseObject):
                 raise ValueError("The vehicle type is not set and no dummy vehicle type is provided.")
             vehicle_type = dummy_vehicle_type
         else:
-            vehicle_type = db_vehicle_types_by_vdv_pk[(self.basis_version, self.fzg_typ_nr)]
+            pk = (self.basis_version, self.fzg_typ_nr)
+            if pk not in vehicle_types_by_vdv_pk:
+                raise ValueError(
+                    f"Rotation {self.um_uid!r} references FZG_TYP_NR={self.fzg_typ_nr!r} "
+                    f"(BASIS_VERSION={self.basis_version!r}) which is not in vehicle_types_by_vdv_pk."
+                )
+            vehicle_type = vehicle_types_by_vdv_pk[pk]
 
         return Rotation(
             scenario=scenario,
@@ -1368,7 +1300,7 @@ class MengeFzgTyp(VdvBaseObject):
     """
 
     @property
-    def primary_key(self) -> Tuple[int | date | str, ...]:
+    def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.fzg_typ_nr
 
     @classmethod
@@ -1448,8 +1380,6 @@ class MengeFzgTyp(VdvBaseObject):
 
         assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
         assert isinstance(data["FZG_TYP_NR"], int), "The `fzg_typ_nr` should be an integer."
-        assert isinstance(data["FZG_TYP_TEXT"], str), "The `fzg_typ_text` should be a string."
-        assert isinstance(data["STR_FZG_TYP"], str), "The `str_fzg_typ` should be a string."
 
         return MengeFzgTyp(
             basis_version=data["BASIS_VERSION"],
@@ -1467,7 +1397,7 @@ class MengeFzgTyp(VdvBaseObject):
         self,
         scenario: Scenario,
         battery_capacity: float = 1000,
-        charging_curve: List[List[float]] = [[0, 1], [150, 150]],
+        charging_curve: List[List[float]] = [[0, 150], [1, 150]],
         opportunity_charging_capable: bool = False,
     ) -> VehicleType:
         """
