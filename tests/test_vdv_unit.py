@@ -45,6 +45,7 @@ from eflips.ingest.vdv._xmldata import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_x10(
     path: Path,
     table_name_str: str,
@@ -81,6 +82,7 @@ def _x10_table(
 # ---------------------------------------------------------------------------
 # _DebugSink
 # ---------------------------------------------------------------------------
+
 
 class TestDebugSink:
     def test_disabled_when_no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,6 +157,7 @@ class TestDebugSink:
 # ---------------------------------------------------------------------------
 # validate_zip_file
 # ---------------------------------------------------------------------------
+
 
 class TestValidateZipFileExtra:
     def _make_zip(self, buf: io.BytesIO, entries: list) -> io.BytesIO:
@@ -237,6 +240,7 @@ class TestValidateZipFileExtra:
 # parse_datatypes
 # ---------------------------------------------------------------------------
 
+
 class TestParseDatatypesExtra:
     def test_float_format(self) -> None:
         result = parse_datatypes(["num[9.4]"])
@@ -254,6 +258,7 @@ class TestParseDatatypesExtra:
 # check_vdv451_file_header — additional error paths
 # ---------------------------------------------------------------------------
 
+
 class TestCheckVdv451HeaderExtra:
     def test_disallowed_charset(self, tmp_path: Path) -> None:
         # UTF-16 is a valid codec but not in the VDV-allowed set.
@@ -268,7 +273,7 @@ class TestCheckVdv451HeaderExtra:
     def test_no_datatypes(self, tmp_path: Path) -> None:
         f = tmp_path / "no_frm.x10"
         f.write_text(
-            'mod; DD.MM.YYYY; HH:MM:SS; free\n'
+            "mod; DD.MM.YYYY; HH:MM:SS; free\n"
             'chs; "ISO8859-1"\n'
             "tbl; REC_SEL\n"
             "atr; BASIS_VERSION; BEREICH_NR\n"
@@ -281,7 +286,7 @@ class TestCheckVdv451HeaderExtra:
     def test_no_column_names(self, tmp_path: Path) -> None:
         f = tmp_path / "no_atr.x10"
         f.write_text(
-            'mod; DD.MM.YYYY; HH:MM:SS; free\n'
+            "mod; DD.MM.YYYY; HH:MM:SS; free\n"
             'chs; "ISO8859-1"\n'
             "tbl; REC_SEL\n"
             "frm; num[9.0]; num[3.0]\n"
@@ -300,10 +305,10 @@ class TestCheckVdv451HeaderExtra:
     def test_mismatched_column_count(self, tmp_path: Path) -> None:
         f = tmp_path / "mismatch.x10"
         f.write_text(
-            'mod; DD.MM.YYYY; HH:MM:SS; free\n'
+            "mod; DD.MM.YYYY; HH:MM:SS; free\n"
             'chs; "ISO8859-1"\n'
             "tbl; REC_SEL\n"
-            "atr; A; B; C\n"       # 3 names
+            "atr; A; B; C\n"  # 3 names
             "frm; num[9.0]; char[4]\n"  # 2 formats
             "eof; 0\n",
             encoding="iso-8859-1",
@@ -327,48 +332,55 @@ _REQUIRED_TABLE_SPECS: dict = {
         ["num[9.0]", "num[8.0]", "num[2.0]"],
     ),
     "REC_ORT": (
-        ["BASIS_VERSION", "ONR_TYP_NR", "ORT_NR", "ORT_NAME",
-         "ORT_REF_ORT", "ORT_REF_ORT_TYP", "ORT_REF_ORT_KUERZEL", "ORT_REF_ORT_NAME"],
-        ["num[9.0]", "num[2.0]", "num[6.0]", "char[40]",
-         "num[6.0]", "num[2.0]", "char[20]", "char[40]"],
+        [
+            "BASIS_VERSION",
+            "ONR_TYP_NR",
+            "ORT_NR",
+            "ORT_NAME",
+            "ORT_REF_ORT",
+            "ORT_REF_ORT_TYP",
+            "ORT_REF_ORT_KUERZEL",
+            "ORT_REF_ORT_NAME",
+        ],
+        ["num[9.0]", "num[2.0]", "num[6.0]", "char[40]", "num[6.0]", "num[2.0]", "char[20]", "char[40]"],
     ),
     "MENGE_FZG_TYP": (
         ["BASIS_VERSION", "FZG_TYP_NR", "FZG_TYP_TEXT", "STR_FZG_TYP"],
         ["num[9.0]", "num[3.0]", "char[40]", "char[6]"],
     ),
     "REC_SEL": (
-        ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR",
-         "SEL_ZIEL_TYP", "SEL_ZIEL", "SEL_LAENGE"],
-        ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]",
-         "num[2.0]", "num[10.0]", "num[6.0]"],
+        ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR", "SEL_ZIEL_TYP", "SEL_ZIEL", "SEL_LAENGE"],
+        ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]", "num[2.0]", "num[10.0]", "num[6.0]"],
     ),
     "SEL_FZT_FELD": (
-        ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR",
-         "SEL_ZIEL_TYP", "SEL_ZIEL", "FGR_NR", "SEL_FZT"],
-        ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]",
-         "num[2.0]", "num[10.0]", "num[5.0]", "num[5.0]"],
+        ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR", "SEL_ZIEL_TYP", "SEL_ZIEL", "FGR_NR", "SEL_FZT"],
+        ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]", "num[2.0]", "num[10.0]", "num[5.0]", "num[5.0]"],
     ),
     "LID_VERLAUF": (
         ["BASIS_VERSION", "LI_NR", "STR_LI_VAR", "LI_LFD_NR", "ONR_TYP_NR", "ORT_NR"],
         ["num[9.0]", "num[6.0]", "char[6]", "num[3.0]", "num[2.0]", "num[10.0]"],
     ),
     "REC_FRT": (
-        ["BASIS_VERSION", "FRT_FID", "LI_NR", "STR_LI_VAR",
-         "TAGESART_NR", "FAHRTART_NR", "FGR_NR", "FRT_START", "UM_UID"],
-        ["num[9.0]", "num[8.0]", "num[6.0]", "char[6]",
-         "num[5.0]", "num[2.0]", "num[5.0]", "num[6.0]", "num[8.0]"],
+        [
+            "BASIS_VERSION",
+            "FRT_FID",
+            "LI_NR",
+            "STR_LI_VAR",
+            "TAGESART_NR",
+            "FAHRTART_NR",
+            "FGR_NR",
+            "FRT_START",
+            "UM_UID",
+        ],
+        ["num[9.0]", "num[8.0]", "num[6.0]", "char[6]", "num[5.0]", "num[2.0]", "num[5.0]", "num[6.0]", "num[8.0]"],
     ),
     "REC_UMLAUF": (
-        ["BASIS_VERSION", "TAGESART_NR", "UM_UID",
-         "ANF_ORT", "ANF_ONR_TYP", "END_ORT", "END_ONR_TYP"],
-        ["num[9.0]", "num[2.0]", "num[8.0]",
-         "num[6.0]", "num[2.0]", "num[6.0]", "num[2.0]"],
+        ["BASIS_VERSION", "TAGESART_NR", "UM_UID", "ANF_ORT", "ANF_ONR_TYP", "END_ORT", "END_ONR_TYP"],
+        ["num[9.0]", "num[2.0]", "num[8.0]", "num[6.0]", "num[2.0]", "num[6.0]", "num[2.0]"],
     ),
     "REC_LID": (
-        ["BASIS_VERSION", "LI_NR", "STR_LI_VAR", "BEREICH_NR",
-         "LI_KUERZEL", "LIDNAME", "ROUTEN_ART"],
-        ["num[9.0]", "num[6.0]", "char[6]", "num[3.0]",
-         "char[7]", "char[30]", "num[2.0]"],
+        ["BASIS_VERSION", "LI_NR", "STR_LI_VAR", "BEREICH_NR", "LI_KUERZEL", "LIDNAME", "ROUTEN_ART"],
+        ["num[9.0]", "num[6.0]", "char[6]", "num[3.0]", "char[7]", "char[30]", "num[2.0]"],
     ),
 }
 
@@ -419,6 +431,7 @@ class TestValidateInputDataVdv451:
 # ---------------------------------------------------------------------------
 # import_vdv452_table_records — error paths + all table type branches
 # ---------------------------------------------------------------------------
+
 
 class TestImportVdv452Extra:
     def test_wrong_column_count_raises(self, tmp_path: Path) -> None:
@@ -529,12 +542,32 @@ class TestImportVdv452Extra:
         tbl = _x10_table(
             tmp_path / "ro.x10",
             "REC_ORT",
-            ["BASIS_VERSION", "ONR_TYP_NR", "ORT_NR", "ORT_NAME",
-             "ORT_REF_ORT", "ORT_REF_ORT_TYP", "ORT_REF_ORT_KUERZEL",
-             "ORT_REF_ORT_NAME", "WGS_XKOOR", "WGS_YKOOR", "ORT_POS_HOEHE"],
-            ["num[9.0]", "num[2.0]", "num[6.0]", "char[40]",
-             "num[6.0]", "num[2.0]", "char[20]", "char[40]",
-             "num[9.6]", "num[9.6]", "num[5.0]"],
+            [
+                "BASIS_VERSION",
+                "ONR_TYP_NR",
+                "ORT_NR",
+                "ORT_NAME",
+                "ORT_REF_ORT",
+                "ORT_REF_ORT_TYP",
+                "ORT_REF_ORT_KUERZEL",
+                "ORT_REF_ORT_NAME",
+                "WGS_XKOOR",
+                "WGS_YKOOR",
+                "ORT_POS_HOEHE",
+            ],
+            [
+                "num[9.0]",
+                "num[2.0]",
+                "num[6.0]",
+                "char[40]",
+                "num[6.0]",
+                "num[2.0]",
+                "char[20]",
+                "char[40]",
+                "num[9.6]",
+                "num[9.6]",
+                "num[5.0]",
+            ],
             [[369, 1, 500, "Hauptbahnhof", 50, 1, "HBF", "Hauptbahnhof", 13.351, 52.519, 100]],
         )
         result = import_vdv452_table_records(tbl)
@@ -543,17 +576,15 @@ class TestImportVdv452Extra:
         assert isinstance(obj, RecOrt)
         assert obj.ort_name == "Hauptbahnhof"
         assert abs(obj.longitude - 13.351) < 0.001  # type: ignore[operator]
-        assert abs(obj.latitude - 52.519) < 0.001   # type: ignore[operator]
+        assert abs(obj.latitude - 52.519) < 0.001  # type: ignore[operator]
         assert obj.altitude == 100
 
     def test_rec_sel(self, tmp_path: Path) -> None:
         tbl = _x10_table(
             tmp_path / "rs.x10",
             "REC_SEL",
-            ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR",
-             "SEL_ZIEL_TYP", "SEL_ZIEL", "SEL_LAENGE"],
-            ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]",
-             "num[2.0]", "num[10.0]", "num[6.0]"],
+            ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR", "SEL_ZIEL_TYP", "SEL_ZIEL", "SEL_LAENGE"],
+            ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]", "num[2.0]", "num[10.0]", "num[6.0]"],
             [[369, 10, 1, 500, 1, 501, 400]],
         )
         result = import_vdv452_table_records(tbl)
@@ -568,10 +599,8 @@ class TestImportVdv452Extra:
         tbl = _x10_table(
             tmp_path / "sfz.x10",
             "SEL_FZT_FELD",
-            ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR",
-             "SEL_ZIEL_TYP", "SEL_ZIEL", "FGR_NR", "SEL_FZT"],
-            ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]",
-             "num[2.0]", "num[10.0]", "num[5.0]", "num[5.0]"],
+            ["BASIS_VERSION", "BEREICH_NR", "ONR_TYP_NR", "ORT_NR", "SEL_ZIEL_TYP", "SEL_ZIEL", "FGR_NR", "SEL_FZT"],
+            ["num[9.0]", "num[3.0]", "num[2.0]", "num[10.0]", "num[2.0]", "num[10.0]", "num[5.0]", "num[5.0]"],
             [[369, 10, 1, 500, 1, 501, 1, 120]],
         )
         result = import_vdv452_table_records(tbl)
@@ -599,10 +628,18 @@ class TestImportVdv452Extra:
         tbl = _x10_table(
             tmp_path / "rf.x10",
             "REC_FRT",
-            ["BASIS_VERSION", "FRT_FID", "LI_NR", "STR_LI_VAR",
-             "TAGESART_NR", "FAHRTART_NR", "FGR_NR", "FRT_START", "UM_UID"],
-            ["num[9.0]", "num[8.0]", "num[6.0]", "char[6]",
-             "num[5.0]", "num[2.0]", "num[5.0]", "num[6.0]", "num[8.0]"],
+            [
+                "BASIS_VERSION",
+                "FRT_FID",
+                "LI_NR",
+                "STR_LI_VAR",
+                "TAGESART_NR",
+                "FAHRTART_NR",
+                "FGR_NR",
+                "FRT_START",
+                "UM_UID",
+            ],
+            ["num[9.0]", "num[8.0]", "num[6.0]", "char[6]", "num[5.0]", "num[2.0]", "num[5.0]", "num[6.0]", "num[8.0]"],
             [[369, 1001, 100, "H", 1, 1, 1, 28800, 200]],
         )
         result = import_vdv452_table_records(tbl)
@@ -616,10 +653,8 @@ class TestImportVdv452Extra:
         tbl = _x10_table(
             tmp_path / "rl.x10",
             "REC_LID",
-            ["BASIS_VERSION", "LI_NR", "STR_LI_VAR", "BEREICH_NR",
-             "LI_KUERZEL", "LIDNAME", "ROUTEN_ART"],
-            ["num[9.0]", "num[6.0]", "char[6]", "num[3.0]",
-             "char[7]", "char[30]", "num[2.0]"],
+            ["BASIS_VERSION", "LI_NR", "STR_LI_VAR", "BEREICH_NR", "LI_KUERZEL", "LIDNAME", "ROUTEN_ART"],
+            ["num[9.0]", "num[6.0]", "char[6]", "num[3.0]", "char[7]", "char[30]", "num[2.0]"],
             [[369, 100, "H", 10, "42", "Linie 42", 1]],
         )
         result = import_vdv452_table_records(tbl)
@@ -676,6 +711,7 @@ class TestImportVdv452Extra:
 # from_dict methods — all classes in _xmldata.py
 # ---------------------------------------------------------------------------
 
+
 class TestFromDictMethods:
     # -- BasisVerGueltigkeit --------------------------------------------------
 
@@ -699,8 +735,12 @@ class TestFromDictMethods:
 
     def test_lid_verlauf(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "LI_LFD_NR": 3, "LI_NR": 100,
-            "STR_LI_VAR": "H", "ONR_TYP_NR": 1, "ORT_NR": 500,
+            "BASIS_VERSION": 369,
+            "LI_LFD_NR": 3,
+            "LI_NR": 100,
+            "STR_LI_VAR": "H",
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
         }
         obj = LidVerlauf.from_dict(d)
         assert obj.li_lfd_nr == 3
@@ -711,8 +751,11 @@ class TestFromDictMethods:
 
     def test_ort_hztf(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "ONR_TYP_NR": 1, "ORT_NR": 500,
-            "FGR_NR": 2, "HP_HZT": 45,
+            "BASIS_VERSION": 369,
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
+            "FGR_NR": 2,
+            "HP_HZT": 45,
         }
         obj = OrtHztf.from_dict(d)
         assert obj.hp_hzt == timedelta(seconds=45)
@@ -723,8 +766,11 @@ class TestFromDictMethods:
 
     def test_rec_frt_hzt(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "ONR_TYP_NR": 1, "ORT_NR": 500,
-            "FRT_FID": 1001, "FRT_HZT_ZEIT": 120,
+            "BASIS_VERSION": 369,
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
+            "FRT_FID": 1001,
+            "FRT_HZT_ZEIT": 120,
         }
         obj = RecFrtHzt.from_dict(d)
         assert obj.frt_hzt_zeit == timedelta(seconds=120)
@@ -735,9 +781,14 @@ class TestFromDictMethods:
 
     def test_sel_fzt_feld(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "BEREICH_NR": 10, "FGR_NR": 1,
-            "ONR_TYP_NR": 1, "ORT_NR": 500,
-            "SEL_ZIEL_TYP": 1, "SEL_ZIEL": 501, "SEL_FZT": 90,
+            "BASIS_VERSION": 369,
+            "BEREICH_NR": 10,
+            "FGR_NR": 1,
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
+            "SEL_ZIEL_TYP": 1,
+            "SEL_ZIEL": 501,
+            "SEL_FZT": 90,
         }
         obj = SelFztFeld.from_dict(d)
         assert obj.sel_fzt == timedelta(seconds=90)
@@ -749,9 +800,15 @@ class TestFromDictMethods:
 
     def test_rec_frt(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "FRT_FID": 2001, "FRT_START": 28800,
-            "LI_NR": 100, "TAGESART_NR": 1, "FAHRTART_NR": 1,
-            "FGR_NR": 1, "STR_LI_VAR": "H", "UM_UID": 200,
+            "BASIS_VERSION": 369,
+            "FRT_FID": 2001,
+            "FRT_START": 28800,
+            "LI_NR": 100,
+            "TAGESART_NR": 1,
+            "FAHRTART_NR": 1,
+            "FGR_NR": 1,
+            "STR_LI_VAR": "H",
+            "UM_UID": 200,
         }
         obj = RecFrt.from_dict(d)
         assert obj.frt_start == timedelta(hours=8)
@@ -761,10 +818,14 @@ class TestFromDictMethods:
 
     def _base_ort(self) -> dict:
         return {
-            "BASIS_VERSION": 369, "ONR_TYP_NR": 1, "ORT_NR": 500,
+            "BASIS_VERSION": 369,
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
             "ORT_NAME": "Hauptbahnhof",
-            "ORT_REF_ORT": 50, "ORT_REF_ORT_TYP": 1,
-            "ORT_REF_ORT_KUERZEL": "HBF", "ORT_REF_ORT_NAME": "Hauptbahnhof Station",
+            "ORT_REF_ORT": 50,
+            "ORT_REF_ORT_TYP": 1,
+            "ORT_REF_ORT_KUERZEL": "HBF",
+            "ORT_REF_ORT_NAME": "Hauptbahnhof Station",
             "ORT_POS_HOEHE": 100,
         }
 
@@ -772,14 +833,14 @@ class TestFromDictMethods:
         d = {**self._base_ort(), "WGS_XKOOR": 13.351, "WGS_YKOOR": 52.519}
         obj = RecOrt.from_dict(d)
         assert abs(obj.longitude - 13.351) < 1e-6  # type: ignore[operator]
-        assert abs(obj.latitude - 52.519) < 1e-6   # type: ignore[operator]
+        assert abs(obj.latitude - 52.519) < 1e-6  # type: ignore[operator]
         assert obj.altitude == 100
 
     def test_rec_ort_ort_pos_xy(self) -> None:
         d = {**self._base_ort(), "ORT_POS_X": 13351000, "ORT_POS_Y": 52519000}
         obj = RecOrt.from_dict(d)
         assert abs(obj.longitude - 13.351) < 0.001  # type: ignore[operator]
-        assert abs(obj.latitude - 52.519) < 0.001   # type: ignore[operator]
+        assert abs(obj.latitude - 52.519) < 0.001  # type: ignore[operator]
 
     def test_rec_ort_ort_pos_dms(self) -> None:
         # 13°21'03.600" E  →  13*1e7 + 21*1e5 + 3600 = 132103600
@@ -787,14 +848,18 @@ class TestFromDictMethods:
         d = {**self._base_ort(), "ORT_POS_LAENGE": 132103600, "ORT_POS_BREITE": 523108416}
         obj = RecOrt.from_dict(d)
         assert abs(obj.longitude - 13.351) < 0.001  # type: ignore[operator]
-        assert abs(obj.latitude - 52.519) < 0.001   # type: ignore[operator]
+        assert abs(obj.latitude - 52.519) < 0.001  # type: ignore[operator]
 
     def test_rec_ort_no_coords(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "ONR_TYP_NR": 2, "ORT_NR": 600,
+            "BASIS_VERSION": 369,
+            "ONR_TYP_NR": 2,
+            "ORT_NR": 600,
             "ORT_NAME": "Depot",
-            "ORT_REF_ORT": None, "ORT_REF_ORT_TYP": None,
-            "ORT_REF_ORT_KUERZEL": None, "ORT_REF_ORT_NAME": None,
+            "ORT_REF_ORT": None,
+            "ORT_REF_ORT_TYP": None,
+            "ORT_REF_ORT_KUERZEL": None,
+            "ORT_REF_ORT_NAME": None,
         }
         obj = RecOrt.from_dict(d)
         assert obj.latitude is None
@@ -803,10 +868,14 @@ class TestFromDictMethods:
 
     def test_rec_ort_standalone_primary_key(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "ONR_TYP_NR": 6, "ORT_NR": 700,
+            "BASIS_VERSION": 369,
+            "ONR_TYP_NR": 6,
+            "ORT_NR": 700,
             "ORT_NAME": "Betriebspunkt",
-            "ORT_REF_ORT": None, "ORT_REF_ORT_TYP": None,
-            "ORT_REF_ORT_KUERZEL": None, "ORT_REF_ORT_NAME": None,
+            "ORT_REF_ORT": None,
+            "ORT_REF_ORT_TYP": None,
+            "ORT_REF_ORT_KUERZEL": None,
+            "ORT_REF_ORT_NAME": None,
         }
         obj = RecOrt.from_dict(d)
         assert obj.primary_key == (369, 6, 700)
@@ -815,9 +884,13 @@ class TestFromDictMethods:
 
     def test_rec_sel(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "BEREICH_NR": 10,
-            "ONR_TYP_NR": 1, "ORT_NR": 500,
-            "SEL_ZIEL_TYP": 1, "SEL_ZIEL": 501, "SEL_LAENGE": 350,
+            "BASIS_VERSION": 369,
+            "BEREICH_NR": 10,
+            "ONR_TYP_NR": 1,
+            "ORT_NR": 500,
+            "SEL_ZIEL_TYP": 1,
+            "SEL_ZIEL": 501,
+            "SEL_LAENGE": 350,
         }
         obj = RecSel.from_dict(d)
         assert obj.sel_laenge == 350
@@ -828,9 +901,13 @@ class TestFromDictMethods:
 
     def _base_umlauf(self) -> dict:
         return {
-            "BASIS_VERSION": 369, "TAGESART_NR": 1, "UM_UID": 200,
-            "ANF_ORT": 300, "ANF_ONR_TYP": 1,
-            "END_ORT": 301, "END_ONR_TYP": 1,
+            "BASIS_VERSION": 369,
+            "TAGESART_NR": 1,
+            "UM_UID": 200,
+            "ANF_ORT": 300,
+            "ANF_ONR_TYP": 1,
+            "END_ORT": 301,
+            "END_ONR_TYP": 1,
         }
 
     def test_rec_umlauf_with_fzg_typ(self) -> None:
@@ -855,9 +932,13 @@ class TestFromDictMethods:
 
     def test_rec_lid_with_name(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "LI_NR": 100, "STR_LI_VAR": "H",
-            "BEREICH_NR": 10, "LI_KUERZEL": "42",
-            "LIDNAME": "Linie 42 Hauptrichtung", "ROUTEN_ART": 1,
+            "BASIS_VERSION": 369,
+            "LI_NR": 100,
+            "STR_LI_VAR": "H",
+            "BEREICH_NR": 10,
+            "LI_KUERZEL": "42",
+            "LIDNAME": "Linie 42 Hauptrichtung",
+            "ROUTEN_ART": 1,
         }
         obj = RecLid.from_dict(d)
         assert obj.lidname == "Linie 42 Hauptrichtung"
@@ -866,9 +947,13 @@ class TestFromDictMethods:
 
     def test_rec_lid_null_name_becomes_na(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "LI_NR": 100, "STR_LI_VAR": "R",
-            "BEREICH_NR": 10, "LI_KUERZEL": "42",
-            "LIDNAME": None, "ROUTEN_ART": 2,
+            "BASIS_VERSION": 369,
+            "LI_NR": 100,
+            "STR_LI_VAR": "R",
+            "BEREICH_NR": 10,
+            "LI_KUERZEL": "42",
+            "LIDNAME": None,
+            "ROUTEN_ART": 2,
         }
         obj = RecLid.from_dict(d)
         assert obj.lidname == "N/A"
@@ -878,11 +963,16 @@ class TestFromDictMethods:
 
     def test_menge_fzg_typ_full(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "FZG_TYP_NR": 5,
-            "FZG_TYP_TEXT": "Solaris Urbino 12", "STR_FZG_TYP": "U12",
-            "FZG_LAENGE": 12000, "FZG_TYP_HOEHE": 330, "FZG_TYP_BREITE": 255,
+            "BASIS_VERSION": 369,
+            "FZG_TYP_NR": 5,
+            "FZG_TYP_TEXT": "Solaris Urbino 12",
+            "STR_FZG_TYP": "U12",
+            "FZG_LAENGE": 12000,
+            "FZG_TYP_HOEHE": 330,
+            "FZG_TYP_BREITE": 255,
             "FZG_TYP_GEWICHT": 12000,
-            "VERBRAUCH_DISTANZ": 800, "VERBRAUCH_ZEIT": 500,
+            "VERBRAUCH_DISTANZ": 800,
+            "VERBRAUCH_ZEIT": 500,
         }
         obj = MengeFzgTyp.from_dict(d)
         assert obj.fzg_typ_text == "Solaris Urbino 12"
@@ -901,9 +991,13 @@ class TestFromDictMethods:
 
     def test_menge_fzg_typ_zero_dims_become_none(self) -> None:
         d = {
-            "BASIS_VERSION": 369, "FZG_TYP_NR": 3,
-            "FZG_TYP_TEXT": "Bus", "STR_FZG_TYP": "B",
-            "FZG_LAENGE": 0, "FZG_TYP_HOEHE": 0, "FZG_TYP_BREITE": 0,
+            "BASIS_VERSION": 369,
+            "FZG_TYP_NR": 3,
+            "FZG_TYP_TEXT": "Bus",
+            "STR_FZG_TYP": "B",
+            "FZG_LAENGE": 0,
+            "FZG_TYP_HOEHE": 0,
+            "FZG_TYP_BREITE": 0,
         }
         obj = MengeFzgTyp.from_dict(d)
         assert obj.fzg_laenge is None

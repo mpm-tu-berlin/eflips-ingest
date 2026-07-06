@@ -22,6 +22,7 @@ PrimaryKey = Tuple[int | date | str, ...]
 
 _WGS84 = Geod(ellps="WGS84")
 
+
 def _geodesic_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """WGS84 geodesic distance between two points in meters (pyproj wraps geographiclib)."""
     _, _, distance = _WGS84.inv(lon1, lat1, lon2, lat2)
