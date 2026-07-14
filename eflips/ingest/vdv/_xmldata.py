@@ -4,6 +4,7 @@
 Generator: DataclassGenerator
 See: https://xsdata.readthedocs.io/
 """
+
 import logging
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -1185,6 +1186,13 @@ class RecUmlauf(VdvBaseObject):
     Identifier of the vehicle type to take on theis rotation
     """
 
+    bhof_ort_nr: Optional[int] = None
+    """
+    ORT_NR of this rotation's home depot (Betriebshof). Not part of the rotation's identity, but used as a
+    hard constraint when chaining open rotation fragments: two fragments may only be joined into one
+    vehicle working if they belong to the same home depot.
+    """
+
     @property
     def primary_key(self) -> PrimaryKey:
         return self.basis_version, self.tagesart_nr, self.um_uid
@@ -1211,9 +1219,16 @@ class RecUmlauf(VdvBaseObject):
             anf_onr_typ=data["ANF_ONR_TYP"],
             end_ort=data["END_ORT"],
             end_onr_typ=data["END_ONR_TYP"],
-            fzg_typ_nr=data["FZG_TYP_NR"]
-            if "FZG_TYP_NR" in data.keys() and isinstance(data["FZG_TYP_NR"], int) and data["FZG_TYP_NR"] != 0
-            else None,
+            fzg_typ_nr=(
+                data["FZG_TYP_NR"]
+                if "FZG_TYP_NR" in data.keys() and isinstance(data["FZG_TYP_NR"], int) and data["FZG_TYP_NR"] != 0
+                else None
+            ),
+            bhof_ort_nr=(
+                data["BHOF_ORT_NR"]
+                if "BHOF_ORT_NR" in data.keys() and isinstance(data["BHOF_ORT_NR"], int) and data["BHOF_ORT_NR"] != 0
+                else None
+            ),
         )
 
     def to_rotation(

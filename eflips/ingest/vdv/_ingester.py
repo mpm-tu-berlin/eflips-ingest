@@ -6,13 +6,13 @@ import logging
 import os
 import pickle
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, IO, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, IO, List, Optional, Set, Tuple, Union, cast
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
@@ -313,6 +313,239 @@ def normalize_trip_offsets(
             step = timedelta(seconds=step_seconds[i])
             new_dwells.append(max(timedelta(0), min(dwell_durations[i], step)))
     return new_offsets, new_dwells
+
+
+# ── Rotation fragment chaining ──────────────────────────────────────────────────────────────────
+#
+# IVU.plan VDV exports cut a vehicle's working day into per-Umlauf *fragments*: REC_UMLAUF rows that
+# begin or end at an ordinary stop rather than at a depot. This happens at line changes (the same bus
+# continues under the next line's Umlauf number) and at the ~03:00 service-day boundary (night buses
+# parked at a street terminal are fetched by the next service day's Umlauf). Downstream consumers
+# require depot-to-depot rotations, so unchained fragments would be discarded there — together with
+# all their revenue kilometres.
+#
+# We therefore re-join fragments into full vehicle workings. There is no explicit chain table to use
+# (REC_UMS is empty in real exports; REC_ABLOESESTELLE covers driver reliefs only), so the join is
+# reconstructed from physical continuity, with *hard* constraints only:
+#
+#   * the successor's first departure station is the predecessor's last arrival station,
+#   * both fragments use the same vehicle type (validated on BVG data: greedy matching without this
+#     constraint pairs e.g. the typ-1022 'N20/74' with the typ-1013 'N20/72' on gap alone, while the
+#     1022 bus actually continues as day-line '220/10'),
+#   * both fragments belong to the same home depot (BHOF_ORT_NR; 436 of 437 pairs in the validation
+#     dataset agree on it — treated as satisfied when either side does not declare one),
+#   * the time gap is non-negative (no overlap) and at most _MAX_CHAIN_GAP (largest genuine gap
+#     observed is ~24 h: a bus positioned at a terminal in the early morning and picked up by the
+#     following night service).
+#
+# Umlauf *names* are deliberately not compared: IVU renumbers Umläufe per line and per service day,
+# so almost every genuine continuation changes its name (only 1 of 437 validated pairs kept it).
+#
+# Ambiguity (several same-type buses parked at the same stop) is resolved 1:1, smallest gap first,
+# with fully specified tie-breakers. Swapping two interchangeable buses does not change the
+# simulation outcome, so any deterministic feasible assignment is equally valid. Unmatched fragments
+# (working chains that cross the export window boundary, or vehicles that continue on lines outside
+# the exported subset) are left untouched.
+
+_MAX_CHAIN_GAP = timedelta(hours=30)
+
+# MENGE_ONR_TYP: 1 = HP (passenger stop), 2 = BHOF (depot point), 6 = BP (operational point).
+# Both BHOF and BP are treated as depot-like endpoints where a rotation may open/close: the
+# zero-duration deadhead handling (see the "Private / Linienwagen" synthesis below) also anchors
+# synthetic depot trips at BP-typed places, so a rotation closed there must not be mistaken for an
+# open fragment by the chainer.
+_ONR_TYP_BHOF = 2
+_ONR_TYP_BP = 6
+_ONR_TYP_DEPOT = frozenset({_ONR_TYP_BHOF, _ONR_TYP_BP})
+
+# Opaque identity of one fragment: unique and sortable, contents otherwise uninterpreted.
+FragmentKey = Tuple[Any, ...]
+
+
+@dataclass(frozen=True)
+class RotationFragment:
+    """
+    Endpoint summary of one materialised rotation, the unit of :func:`match_rotation_fragments`.
+
+    ``start_station`` / ``end_station`` / ``vehicle_type`` are opaque identity tokens — any objects
+    with equality semantics (ORM instances in production, plain strings in tests).
+    """
+
+    key: FragmentKey  # unique and sortable; used for deterministic tie-breaking
+    start_station: object
+    start_time: datetime
+    end_station: object
+    end_time: datetime
+    start_at_depot: bool
+    end_at_depot: bool
+    vehicle_type: object
+    home_depot: Optional[int]  # BHOF_ORT_NR; None = not declared
+
+
+def match_rotation_fragments(
+    fragments: List[RotationFragment], max_gap: timedelta = _MAX_CHAIN_GAP
+) -> List[Tuple[FragmentKey, FragmentKey]]:
+    """
+    Match open rotation fragments into (predecessor, successor) pairs under the hard constraints
+    described above. Rotations that start *and* end at a depot are closed and never take part.
+
+    :return: List of ``(predecessor.key, successor.key)`` pairs. Each fragment appears at most once
+        as predecessor and at most once as successor; transitive pairs form longer chains.
+    """
+    zero = timedelta(0)
+    tails_by_station_and_type: Dict[Tuple[object, object], List[RotationFragment]] = defaultdict(list)
+    for f in sorted((f for f in fragments if not f.end_at_depot), key=lambda f: f.key):
+        tails_by_station_and_type[(f.end_station, f.vehicle_type)].append(f)
+
+    candidates: List[Tuple[timedelta, FragmentKey, FragmentKey]] = []
+    for s in sorted((f for f in fragments if not f.start_at_depot), key=lambda f: f.key):
+        for p in tails_by_station_and_type.get((s.start_station, s.vehicle_type), []):
+            if p.key == s.key:
+                continue
+            if p.home_depot is not None and s.home_depot is not None and p.home_depot != s.home_depot:
+                continue
+            gap = s.start_time - p.end_time
+            if zero <= gap <= max_gap:
+                candidates.append((gap, p.key, s.key))
+
+    # Greedy 1:1, smallest gap first. Cycles cannot arise: every link consumes non-negative time and
+    # every fragment has positive duration, so a chain can never return to its own start.
+    candidates.sort()
+    used_pred: Set[FragmentKey] = set()
+    used_succ: Set[FragmentKey] = set()
+    pairs: List[Tuple[FragmentKey, FragmentKey]] = []
+    for gap, p_key, s_key in candidates:
+        if p_key in used_pred or s_key in used_succ:
+            continue
+        used_pred.add(p_key)
+        used_succ.add(s_key)
+        pairs.append((p_key, s_key))
+    return pairs
+
+
+def chain_rotation_fragments(
+    session: Session,
+    rotations_by_key: Dict[Tuple[Any, ...], Rotation],
+    home_depot_by_rotation_pk: Dict[Tuple[Any, ...], Optional[int]],
+    depot_stations: Set[Any],
+    debug: "_DebugSink",
+    max_gap: timedelta = _MAX_CHAIN_GAP,
+) -> None:
+    """
+    Join materialised open rotation fragments into full vehicle workings (see module comment above).
+
+    :param rotations_by_key: Materialised rotations keyed by ``(basis_version, tagesart_nr, um_uid,
+        date)``. Rotations without trips are ignored.
+    :param home_depot_by_rotation_pk: ``RecUmlauf.bhof_ort_nr`` keyed by ``(basis_version,
+        tagesart_nr, um_uid)``.
+    :param depot_stations: Stations that represent a depot (any VDV ort with ONR_TYP_NR in
+        {2 (BHOF), 6 (BP)} maps to them). Fragments are only chained at non-depot stations.
+    """
+    logger = logging.getLogger(__name__)
+
+    fragments: List[RotationFragment] = []
+    rotation_by_fragment_key: Dict[FragmentKey, Rotation] = {}
+    for key in sorted(rotations_by_key.keys()):
+        rotation = rotations_by_key[key]
+        if len(rotation.trips) == 0:
+            continue
+        trips = sorted(rotation.trips, key=lambda t: (t.departure_time, t.arrival_time))
+        first_trip, last_trip = trips[0], trips[-1]
+        fragment_key = (key[0], key[1], key[2], key[3].isoformat())
+        fragments.append(
+            RotationFragment(
+                key=fragment_key,
+                start_station=first_trip.route.departure_station,
+                start_time=first_trip.departure_time,
+                end_station=last_trip.route.arrival_station,
+                end_time=last_trip.arrival_time,
+                start_at_depot=first_trip.route.departure_station in depot_stations,
+                end_at_depot=last_trip.route.arrival_station in depot_stations,
+                vehicle_type=rotation.vehicle_type,
+                home_depot=home_depot_by_rotation_pk.get((key[0], key[1], key[2])),
+            )
+        )
+        rotation_by_fragment_key[fragment_key] = rotation
+
+    n_open = sum(int(not f.start_at_depot) + int(not f.end_at_depot) for f in fragments)
+    pairs = match_rotation_fragments(fragments, max_gap)
+
+    succ_of = dict(pairs)
+    has_pred = {s for _, s in pairs}
+    n_merged_fragments = 0
+    n_chains = 0
+    # Chain roots are the fragments with no predecessor. If the safety net below aborts a link
+    # mid-chain, the aborted successor is re-queued here as a fresh root so its own downstream
+    # links still get built instead of being silently dropped with the discarded predecessor.
+    roots = deque(sorted(k for k in succ_of.keys() if k not in has_pred))
+    processed: Set[FragmentKey] = set()
+    while roots:
+        root_key = roots.popleft()
+        if root_key in processed:
+            continue
+        processed.add(root_key)
+        head = rotation_by_fragment_key[root_key]
+        member_names = [str(head.name)]
+        member_keys = [root_key]
+        key = root_key
+        while key in succ_of:
+            successor_key = succ_of[key]
+            successor = rotation_by_fragment_key[successor_key]
+            # Safety net: the matcher already guarantees non-overlap, so this only fires if the
+            # matcher and the trips it saw ever get out of sync. Better to leave two open fragments
+            # (dropped downstream) than to build a rotation with overlapping trips.
+            head_last_arrival = max(t.arrival_time for t in head.trips)
+            successor_first_departure = min(t.departure_time for t in successor.trips)
+            if successor_first_departure < head_last_arrival:
+                logger.warning(
+                    f"Not chaining rotation {successor.name!r} onto {head.name!r}: it departs "
+                    f"{successor_first_departure} before the chain's last arrival {head_last_arrival}."
+                )
+                debug.log(
+                    "fragment_chain_link_rejected",
+                    chain_head=list(root_key),
+                    successor=list(successor_key),
+                    head_last_arrival=head_last_arrival,
+                    successor_first_departure=successor_first_departure,
+                )
+                # The aborted successor may itself head a valid downstream chain; process it as a
+                # new root so C->D in A->B->C->D survives even when B->C is rejected.
+                roots.append(successor_key)
+                break
+            for trip in list(successor.trips):
+                trip.rotation = head
+            member_names.append(str(successor.name))
+            member_keys.append(successor_key)
+            processed.add(successor_key)
+            session.delete(successor)
+            n_merged_fragments += 1
+            key = successor_key
+        if len(member_names) > 1:
+            head.name = " + ".join(member_names)
+            n_chains += 1
+            debug.log(
+                "fragment_chain_merged",
+                chain_head=list(root_key),
+                members=[list(k) for k in member_keys],
+                name=head.name,
+            )
+    session.flush()
+
+    n_still_open = n_open - 2 * n_merged_fragments  # each executed join closes one tail and one head
+    logger.info(
+        f"Rotation fragment chaining: {len(fragments)} rotations, {n_open} open fragment endpoints "
+        f"before, {n_merged_fragments} joins into {n_chains} chained rotations, "
+        f"{n_still_open} open endpoints left (export-window edges or vehicles leaving the exported "
+        f"line subset)."
+    )
+    debug.log(
+        "fragment_chain_summary",
+        n_rotations=len(fragments),
+        n_open_endpoints=n_open,
+        n_joins=n_merged_fragments,
+        n_chained_rotations=n_chains,
+        n_open_endpoints_left=n_still_open,
+    )
 
 
 class VdvIngester(AbstractIngester):
@@ -925,6 +1158,22 @@ class VdvIngester(AbstractIngester):
                 for rotation in list(scenario.rotations):
                     if len(rotation.trips) == 0:
                         session.delete(rotation)
+
+                # Re-join rotation fragments (vehicle workings cut at line changes / the service-day
+                # boundary) into full depot-to-depot rotations. See the module comment on
+                # match_rotation_fragments for the evidence behind the matching rules.
+                if not os.environ.get("EFLIPS_VDV_DISABLE_FRAGMENT_CHAINING"):
+                    depot_stations = {station for pk, station in stations_by_vdv_pk.items() if pk[1] in _ONR_TYP_DEPOT}
+                    home_depot_by_rotation_pk = {
+                        pk: vdv_rotation.bhof_ort_nr for pk, vdv_rotation in vdv_rotations_by_pk.items()
+                    }
+                    chain_rotation_fragments(
+                        session,
+                        rotations_by_vdv_pk_and_date,
+                        home_depot_by_rotation_pk,
+                        depot_stations,
+                        debug,
+                    )
 
                 session.commit()
                 debug.log("ingest_complete")

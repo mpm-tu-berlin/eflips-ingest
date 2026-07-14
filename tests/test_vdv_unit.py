@@ -4,6 +4,7 @@ Covers _DebugSink, validate_zip_file, parse_datatypes, check_vdv451_file_header,
 import_vdv452_table_records (all table branches + error paths), and every from_dict
 method in _xmldata.py.
 """
+
 import io
 import json
 import os
@@ -39,7 +40,6 @@ from eflips.ingest.vdv._xmldata import (
     RoutenArt,
     SelFztFeld,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1011,3 +1011,297 @@ class TestFromDictMethods:
         assert obj.fzg_laenge is None
         assert obj.fzg_hoehe is None
         assert obj.fzg_breite is None
+
+
+# ---------------------------------------------------------------------------
+# Rotation fragment chaining (match_rotation_fragments)
+# ---------------------------------------------------------------------------
+
+from eflips.ingest.vdv._ingester import (
+    RotationFragment,
+    chain_rotation_fragments,
+    match_rotation_fragments,
+)
+
+
+def _fragment(
+    key,
+    start="DEPOT",
+    end="DEPOT",
+    start_h=4.0,
+    end_h=23.0,
+    start_at_depot=None,
+    end_at_depot=None,
+    vehicle_type="VT1",
+    home_depot=9408,
+    day=0,
+):
+    """Build a RotationFragment with terse test notation; hours are offsets from an arbitrary epoch."""
+    base = datetime(2023, 3, 27, 0, 0) + timedelta(days=day)
+    return RotationFragment(
+        key=key if isinstance(key, tuple) else (key,),
+        start_station=start,
+        start_time=base + timedelta(hours=start_h),
+        end_station=end,
+        end_time=base + timedelta(hours=end_h),
+        start_at_depot=start == "DEPOT" if start_at_depot is None else start_at_depot,
+        end_at_depot=end == "DEPOT" if end_at_depot is None else end_at_depot,
+        vehicle_type=vehicle_type,
+        home_depot=home_depot,
+    )
+
+
+class TestMatchRotationFragments:
+    def test_no_fragments(self) -> None:
+        assert match_rotation_fragments([]) == []
+
+    def test_closed_rotations_ignored(self) -> None:
+        frags = [
+            _fragment("a", start="DEPOT", end="DEPOT"),
+            _fragment("b", start="DEPOT", end="DEPOT", start_h=5, end_h=22),
+        ]
+        assert match_rotation_fragments(frags) == []
+
+    def test_simple_handover(self) -> None:
+        # a: depot -> stop X at 21:00; b: stop X 21:30 -> depot.
+        a = _fragment("a", end="X", end_h=21.0)
+        b = _fragment("b", start="X", start_h=21.5)
+        assert match_rotation_fragments([a, b]) == [(("a",), ("b",))]
+
+    def test_negative_gap_rejected(self) -> None:
+        a = _fragment("a", end="X", end_h=22.0)
+        b = _fragment("b", start="X", start_h=21.5)  # departs before a arrives
+        assert match_rotation_fragments([a, b]) == []
+
+    def test_gap_above_max_rejected_at_max_accepted(self) -> None:
+        a = _fragment("a", end="X", end_h=1.0)
+        b = _fragment("b", start="X", start_h=7.0, day=1)  # 30 h later exactly
+        c = _fragment("c", start="X", start_h=7.0001, day=1)
+        assert match_rotation_fragments([a, b]) == [(("a",), ("b",))]
+        assert match_rotation_fragments([a, c]) == []
+
+    def test_vehicle_type_is_hard_constraint(self) -> None:
+        # The N20 pattern: the tempting 3-minute pairing has the wrong vehicle type; the correct
+        # partner is hours away. The type constraint must override the smaller gap.
+        n20_74 = _fragment("N20/74", end="Hainbuchenstr.", end_h=3.8, vehicle_type="1022")
+        n20_72 = _fragment("N20/72", start="Hainbuchenstr.", start_h=3.85, vehicle_type="1013")
+        line_220_10 = _fragment("220/10", start="Hainbuchenstr.", start_h=5.0, vehicle_type="1022")
+        n20_51 = _fragment("N20/51", end="Hainbuchenstr.", end_h=2.25, vehicle_type="1013")
+        pairs = match_rotation_fragments([n20_74, n20_72, line_220_10, n20_51])
+        assert (("N20/74",), ("220/10",)) in pairs
+        assert (("N20/51",), ("N20/72",)) in pairs
+        assert len(pairs) == 2
+
+    def test_home_depot_is_hard_constraint(self) -> None:
+        a = _fragment("a", end="X", end_h=21.0, home_depot=9408)
+        b = _fragment("b", start="X", start_h=21.5, home_depot=39420)
+        assert match_rotation_fragments([a, b]) == []
+
+    def test_missing_home_depot_is_wildcard(self) -> None:
+        a = _fragment("a", end="X", end_h=21.0, home_depot=None)
+        b = _fragment("b", start="X", start_h=21.5, home_depot=39420)
+        assert match_rotation_fragments([a, b]) == [(("a",), ("b",))]
+
+    def test_one_to_one_smallest_gap_first(self) -> None:
+        # Two buses parked at X, two departures: earliest departure takes the latest arrival
+        # (smallest gap), the remaining pair still matches 1:1.
+        p1 = _fragment("p1", end="X", end_h=20.0)
+        p2 = _fragment("p2", end="X", end_h=21.0)
+        s1 = _fragment("s1", start="X", start_h=21.5)
+        s2 = _fragment("s2", start="X", start_h=23.0)
+        pairs = match_rotation_fragments([p1, p2, s1, s2])
+        assert (("p2",), ("s1",)) in pairs
+        assert (("p1",), ("s2",)) in pairs
+        assert len(pairs) == 2
+
+    def test_deterministic_tie_break_on_equal_gap(self) -> None:
+        # Two interchangeable predecessors arrive at the same time: the smaller key wins, always.
+        p_b = _fragment("b", end="X", end_h=21.0)
+        p_a = _fragment("a", end="X", end_h=21.0)
+        s = _fragment("s", start="X", start_h=22.0)
+        for frags in ([p_b, p_a, s], [p_a, p_b, s], [s, p_b, p_a]):
+            assert match_rotation_fragments(frags) == [(("a",), ("s",))]
+
+    def test_transitive_chain(self) -> None:
+        # depot -> X -> Y -> depot over three fragments.
+        a = _fragment("a", end="X", end_h=10.0)
+        b = _fragment("b", start="X", end="Y", start_h=11.0, end_h=15.0)
+        c = _fragment("c", start="Y", start_h=16.0)
+        pairs = match_rotation_fragments([a, b, c])
+        assert (("a",), ("b",)) in pairs
+        assert (("b",), ("c",)) in pairs
+        assert len(pairs) == 2
+
+    def test_cross_day_chain(self) -> None:
+        # Night bus left at the terminal at 02:15, fetched at 03:21 the next service day.
+        p = _fragment("N20/51", end="Hainbuchenstr.", end_h=26.25, vehicle_type="1013")
+        s = _fragment("N20/71", start="Hainbuchenstr.", start_h=3.35, day=1, vehicle_type="1013")
+        assert match_rotation_fragments([p, s]) == [(("N20/51",), ("N20/71",))]
+
+    def test_fragment_never_chains_to_itself(self) -> None:
+        # A street->street fragment could otherwise "follow itself" at gap 0 if start == end.
+        f = _fragment("f", start="X", end="X", start_h=4.0, end_h=4.0)
+        assert match_rotation_fragments([f]) == []
+
+
+class TestRecUmlaufBhof:
+    def _base(self) -> dict:
+        return {
+            "BASIS_VERSION": 369,
+            "TAGESART_NR": 1,
+            "UM_UID": 200,
+            "ANF_ORT": 300,
+            "ANF_ONR_TYP": 1,
+            "END_ORT": 301,
+            "END_ONR_TYP": 1,
+        }
+
+    def test_bhof_ort_nr_parsed(self) -> None:
+        obj = RecUmlauf.from_dict({**self._base(), "BHOF_ORT_NR": 9408})
+        assert obj.bhof_ort_nr == 9408
+
+    def test_bhof_ort_nr_missing_gives_none(self) -> None:
+        obj = RecUmlauf.from_dict(self._base())
+        assert obj.bhof_ort_nr is None
+
+    def test_bhof_ort_nr_zero_gives_none(self) -> None:
+        obj = RecUmlauf.from_dict({**self._base(), "BHOF_ORT_NR": 0})
+        assert obj.bhof_ort_nr is None
+
+
+# ---------------------------------------------------------------------------
+# Rotation fragment chaining (chain_rotation_fragments)
+# ---------------------------------------------------------------------------
+
+
+class _FakeRoute:
+    def __init__(self, departure_station: object, arrival_station: object) -> None:
+        self.departure_station = departure_station
+        self.arrival_station = arrival_station
+
+
+class _FakeTrip:
+    """Trip whose ``rotation`` setter mirrors SQLAlchemy's backref: reassigning it moves the
+    trip out of the old rotation's ``trips`` and into the new one's, exactly as the ORM does
+    when ``chain_rotation_fragments`` reparents trips onto the chain head."""
+
+    def __init__(self, dep_station, arr_station, dep_h: float, arr_h: float) -> None:
+        base = datetime(2024, 1, 1, 0, 0)
+        self.route = _FakeRoute(dep_station, arr_station)
+        self.departure_time = base + timedelta(hours=dep_h)
+        self.arrival_time = base + timedelta(hours=arr_h)
+        self._rotation: "_FakeRotation | None" = None
+
+    @property
+    def rotation(self) -> "_FakeRotation | None":
+        return self._rotation
+
+    @rotation.setter
+    def rotation(self, new: "_FakeRotation | None") -> None:
+        if self._rotation is not None and self in self._rotation.trips:
+            self._rotation.trips.remove(self)
+        self._rotation = new
+        if new is not None and self not in new.trips:
+            new.trips.append(self)
+
+
+class _FakeRotation:
+    def __init__(self, name: str, vehicle_type: object, trips: "list[_FakeTrip]") -> None:
+        self.name = name
+        self.vehicle_type = vehicle_type
+        self.trips: "list[_FakeTrip]" = []
+        for trip in trips:
+            trip.rotation = self
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.deleted: list = []
+
+    def delete(self, obj: object) -> None:
+        self.deleted.append(obj)
+
+    def flush(self) -> None:  # pragma: no cover - trivial
+        pass
+
+
+class TestChainRotationFragments:
+    """Integration-ish coverage for the merge/reparent/delete logic, using plain in-memory
+    fakes instead of an ORM session (the full-DB ``test_ingest`` is skipped for runtime)."""
+
+    def _key(self, name: str) -> tuple:
+        # (basis_version, tagesart_nr, um_uid, date) — the shape chain_rotation_fragments expects.
+        return (1, 1, name, date(2024, 1, 1))
+
+    def test_linear_chain_merges_all(self) -> None:
+        # A(->SB) | B(SB->SC) | C(SC->SD): a plain three-fragment working, all links valid.
+        a = _FakeRotation("A", "VT", [_FakeTrip("SA", "SB", 8.0, 9.0)])
+        b = _FakeRotation("B", "VT", [_FakeTrip("SB", "SC", 9.5, 10.0)])
+        c = _FakeRotation("C", "VT", [_FakeTrip("SC", "SD", 10.5, 11.0)])
+        rotations = {self._key(n): r for n, r in (("A", a), ("B", b), ("C", c))}
+
+        session = _FakeSession()
+        chain_rotation_fragments(
+            session,
+            rotations,
+            home_depot_by_rotation_pk={},
+            depot_stations=set(),
+            debug=_DebugSink(),
+        )
+
+        assert a.name == "A + B + C"
+        assert session.deleted == [b, c]
+
+    def test_safety_net_requeues_downstream_link(self) -> None:
+        # Chain A->B->C->D as seen by the matcher, but B hides a late-arriving trip so the head's
+        # true last arrival (13:00) sits after C's departure (10:30). The safety net must reject
+        # B->C, yet C->D is an independently valid link and must still be built. Regression guard
+        # for the bug where the aborted successor was never re-processed as its own chain root.
+        a = _FakeRotation("A", "VT", [_FakeTrip("SA", "SB", 8.0, 9.0)])
+        b = _FakeRotation(
+            "B",
+            "VT",
+            [
+                _FakeTrip("SB", "SC", 9.49, 13.0),  # first by departure, hidden late arrival
+                _FakeTrip("SB", "SC", 9.5, 10.0),  # last by departure -> fragment end = SC/10:00
+            ],
+        )
+        c = _FakeRotation("C", "VT", [_FakeTrip("SC", "SD", 10.5, 11.0)])
+        d = _FakeRotation("D", "VT", [_FakeTrip("SD", "SE", 11.5, 12.0)])
+        rotations = {self._key(n): r for n, r in (("A", a), ("B", b), ("C", c), ("D", d))}
+
+        session = _FakeSession()
+        chain_rotation_fragments(
+            session,
+            rotations,
+            home_depot_by_rotation_pk={},
+            depot_stations=set(),
+            debug=_DebugSink(),
+        )
+
+        assert a.name == "A + B"  # A->B was fine
+        assert c.name == "C + D"  # C->D survived despite B->C being rejected
+        assert b in session.deleted  # B was merged into A
+        assert d in session.deleted  # D was merged into C
+        assert c not in session.deleted  # C is a chain head, not consumed
+
+    def test_bp_endpoint_not_treated_as_open_fragment(self) -> None:
+        # A rotation closing at a BP-typed depot station must not be chained onto an unrelated
+        # working that shares that station. With BP in depot_stations, both endpoints are closed,
+        # so the matcher never pairs them and nothing is merged/deleted.
+        closed = _FakeRotation("CLOSED", "VT", [_FakeTrip("BP", "BP", 8.0, 9.0)])
+        other = _FakeRotation("OTHER", "VT", [_FakeTrip("BP", "BP", 9.5, 10.5)])
+        rotations = {self._key(n): r for n, r in (("CLOSED", closed), ("OTHER", other))}
+
+        session = _FakeSession()
+        chain_rotation_fragments(
+            session,
+            rotations,
+            home_depot_by_rotation_pk={},
+            depot_stations={"BP"},
+            debug=_DebugSink(),
+        )
+
+        assert closed.name == "CLOSED"
+        assert other.name == "OTHER"
+        assert session.deleted == []
