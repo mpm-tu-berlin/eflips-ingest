@@ -17,6 +17,8 @@ from eflips.ingest.bvgxml._pipeline import (
     setup_working_dictionaries,
     create_routes_and_time_profiles,
     create_trip_prototypes,
+    RegisteredRotation,
+    RotationRegistry,
     TimeProfile,
     create_trips_and_vehicle_schedules,
     recenter_station,
@@ -169,7 +171,7 @@ class TestBVGXML:
             trips_by_id: Dict[int, TimeProfile] = create_trip_prototypes(
                 linienfahrplan, trip_time_profiles, db_routes_by_lfd_nr
             )
-            create_trips_and_vehicle_schedules(linienfahrplan, trips_by_id, scenario_id, session)
+            create_trips_and_vehicle_schedules(linienfahrplan, trips_by_id, scenario_id, session, RotationRegistry())
 
     def test_create_working_data(self, linienfahrplan):
         grid_points, segments, route_datas, route_lfd_nrs = setup_working_dictionaries(linienfahrplan)
@@ -423,3 +425,314 @@ class TestBvgxmlIngester(BaseIngester):
             )
             assert len(scenarios) == 2
             assert scenarios[0].id != scenarios[1].id
+
+
+# ---------------------------------------------------------------------------
+# Rotation reassembly (RotationRegistry / create_trips_and_vehicle_schedules)
+# and window-edge cleanup (delete_incomplete_rotations).
+#
+# These are DB-free: fakes stand in for the ORM session, mirroring the style
+# of the chain_rotation_fragments tests in test_vdv_unit.py.
+# ---------------------------------------------------------------------------
+
+from datetime import date, datetime, timedelta
+from types import SimpleNamespace
+
+from eflips.ingest.bvgxml import _pipeline
+from eflips.ingest.bvgxml._pipeline import (
+    _parse_kalenderdatum,
+    delete_incomplete_rotations,
+)
+
+
+class _NoAutoflush:
+    def __enter__(self) -> "_NoAutoflush":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeQuery:
+    def __init__(self, items: list) -> None:
+        self._items = items
+
+    def filter(self, *args: object) -> "_FakeQuery":
+        return self
+
+    def all(self) -> list:
+        return self._items
+
+
+class _FakeSession:
+    def __init__(self, rotations: list | None = None) -> None:
+        self.added: list = []
+        self.deleted: list = []
+        self.no_autoflush = _NoAutoflush()
+        self._rotations = rotations if rotations is not None else []
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    def add_all(self, objs: list) -> None:
+        self.added.extend(objs)
+
+    def delete(self, obj: object) -> None:
+        self.deleted.append(obj)
+
+    def flush(self) -> None:
+        pass
+
+    def query(self, *args: object) -> _FakeQuery:
+        return _FakeQuery(self._rotations)
+
+
+class _FakePrototype:
+    """Stands in for a TimeProfile; records which rotation each trip was attached to."""
+
+    _STATION = SimpleNamespace(name="Somewhere", id=0)
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def to_trip(self, rotation: object, the_date: date) -> SimpleNamespace:
+        self.calls.append((rotation, the_date))
+        return SimpleNamespace(rotation=rotation, stop_times=[SimpleNamespace(station=self._STATION)])
+
+
+def _schedule(*fahrzeugumlaeufe: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(fahrzeugumlauf_daten=SimpleNamespace(fahrzeugumlauf=list(fahrzeugumlaeufe)))
+
+
+def _fahrzeugumlauf(
+    umlaeufe: "list[tuple[int, str, str]]",
+    fahrt_ids_by_umlauf: "dict[int, list[int]]",
+    betriebshof: int = 9424,
+    fahrzeugtyp: str = "GEG",
+) -> SimpleNamespace:
+    """
+    Build a Fahrzeugumlauf fake. ``umlaeufe`` is a list of (umlauf_id, kalenderdatum,
+    bezeichnung); ``fahrt_ids_by_umlauf`` gives each Umlauf's materialised FahrtIDs in this
+    file's slice (an empty list models the empty Fahrtreihenfolge of a foreign line's copy).
+    """
+    umlauf_fakes = []
+    for umlauf_id, kalenderdatum, bezeichnung in umlaeufe:
+        fahrten = [SimpleNamespace(fahrt_id=fid) for fid in fahrt_ids_by_umlauf.get(umlauf_id, [])]
+        teilgruppe = SimpleNamespace(
+            fahrzeugtyp=[fahrzeugtyp],
+            fahrtreihenfolge=SimpleNamespace(fahrt=fahrten) if fahrten else None,
+        )
+        umlauf_fakes.append(
+            SimpleNamespace(
+                umlauf_id=umlauf_id,
+                kalenderdatum=kalenderdatum,
+                umlaufbezeichnung=bezeichnung,
+                umlaufteilgruppen=SimpleNamespace(umlaufteilgruppe=[teilgruppe]),
+            )
+        )
+    return SimpleNamespace(
+        betriebshof=betriebshof,
+        fahrzeugtyp=fahrzeugtyp,
+        umlaeufe=SimpleNamespace(umlauf=umlauf_fakes),
+    )
+
+
+@pytest.fixture
+def fake_vehicle_types(monkeypatch) -> dict:
+    """Replace add_or_ret_vehicle_type with a per-name singleton cache of VehicleType fakes."""
+    cache: dict = {}
+
+    def _fake(scenario_id: int, fahrzeugtyp: str, session: object) -> SimpleNamespace:
+        if fahrzeugtyp not in cache:
+            cache[fahrzeugtyp] = eflips.model.VehicleType(
+                scenario_id=scenario_id,
+                name=fahrzeugtyp,
+                name_short=fahrzeugtyp,
+                battery_capacity=100,
+                charging_curve=[[0, 150], [1, 150]],
+                opportunity_charging_capable=False,
+            )
+        return cache[fahrzeugtyp]
+
+    monkeypatch.setattr(_pipeline, "add_or_ret_vehicle_type", _fake)
+    return cache
+
+
+class TestParseKalenderdatum:
+    def test_parses_german_date(self) -> None:
+        assert _parse_kalenderdatum("16.06.2025") == date(2025, 6, 16)
+
+
+class TestRotationRegistry:
+    KEY_A = ((1, date(2025, 6, 16)), (2, date(2025, 6, 17)))
+    KEY_B = ((3, date(2025, 6, 16)),)
+
+    def _entry(self) -> RegisteredRotation:
+        return RegisteredRotation(rotation=SimpleNamespace(), betriebshof=9424, name="100/1 N02/1")
+
+    def test_get_unknown_key_returns_none(self) -> None:
+        assert RotationRegistry().get(self.KEY_A) is None
+
+    def test_add_then_get_returns_entry(self) -> None:
+        registry = RotationRegistry()
+        entry = self._entry()
+        registry.add(self.KEY_A, entry)
+        assert registry.get(self.KEY_A) is entry
+        assert registry.get(self.KEY_B) is None
+
+    def test_conflicting_grouping_raises(self) -> None:
+        # A second file groups Umlauf (2, 17.06.) with a different partner: the files contradict
+        # each other about which Umlaeufe form one vehicle working. Must be loud, not silent.
+        registry = RotationRegistry()
+        registry.add(self.KEY_A, self._entry())
+        overlapping_key = ((2, date(2025, 6, 17)), (4, date(2025, 6, 18)))
+        with pytest.raises(ValueError, match="Inconsistent Fahrzeugumlauf grouping"):
+            registry.get(overlapping_key)
+
+
+class TestRotationReassembly:
+    """create_trips_and_vehicle_schedules must join the per-line file slices of one physical
+    vehicle working into a single rotation, and crash on contradictory input."""
+
+    def test_two_file_slices_share_one_rotation(self, fake_vehicle_types) -> None:
+        # The '106/2' working serves lines 106 and 204. The 106 file materialises only the 106
+        # trips, the 204 file only the 204 trips; both carry the full Umlauf group.
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype(), 12: _FakePrototype(), 21: _FakePrototype()}
+
+        file_106 = _schedule(_fahrzeugumlauf([(1, "16.06.2025", "106/2")], {1: [11, 12]}))
+        file_204 = _schedule(_fahrzeugumlauf([(1, "16.06.2025", "106/2")], {1: [21]}))
+        create_trips_and_vehicle_schedules(file_106, prototypes, 1, session, registry)
+        create_trips_and_vehicle_schedules(file_204, prototypes, 1, session, registry)
+
+        rotations = [obj for obj in session.added if isinstance(obj, eflips.model.Rotation)]
+        assert len(rotations) == 1
+        assert rotations[0].name == "106/2"
+        attached_to = {proto.calls[0][0] for proto in prototypes.values()}
+        assert attached_to == {rotations[0]}
+        entry = registry.get(((1, date(2025, 6, 16)),))
+        assert entry is not None and entry.materialized_fahrt_ids == {11, 12, 21}
+
+    def test_multi_umlauf_working_keeps_one_rotation_and_name(self, fake_vehicle_types) -> None:
+        # A day+night working ('163/6 N63/9') grouped into one Fahrzeugumlauf, seen in two files.
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype(), 21: _FakePrototype()}
+        group = [(1, "16.06.2025", "163/6"), (2, "17.06.2025", "N63/9")]
+
+        create_trips_and_vehicle_schedules(
+            _schedule(_fahrzeugumlauf(group, {1: [11]})), prototypes, 1, session, registry
+        )
+        create_trips_and_vehicle_schedules(
+            _schedule(_fahrzeugumlauf(group, {2: [21]})), prototypes, 1, session, registry
+        )
+
+        rotations = [obj for obj in session.added if isinstance(obj, eflips.model.Rotation)]
+        assert len(rotations) == 1
+        assert rotations[0].name == "163/6 N63/9"
+
+    def test_duplicate_fahrt_across_files_raises(self, fake_vehicle_types) -> None:
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype()}
+        fu = [(1, "16.06.2025", "106/2")]
+
+        create_trips_and_vehicle_schedules(_schedule(_fahrzeugumlauf(fu, {1: [11]})), prototypes, 1, session, registry)
+        with pytest.raises(ValueError, match="materialised by more than one input file"):
+            create_trips_and_vehicle_schedules(
+                _schedule(_fahrzeugumlauf(fu, {1: [11]})), prototypes, 1, session, registry
+            )
+
+    def test_name_contradiction_raises(self, fake_vehicle_types) -> None:
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype(), 21: _FakePrototype()}
+
+        create_trips_and_vehicle_schedules(
+            _schedule(_fahrzeugumlauf([(1, "16.06.2025", "106/2")], {1: [11]})), prototypes, 1, session, registry
+        )
+        with pytest.raises(ValueError, match="is named"):
+            create_trips_and_vehicle_schedules(
+                _schedule(_fahrzeugumlauf([(1, "16.06.2025", "204/8")], {1: [21]})), prototypes, 1, session, registry
+            )
+
+    def test_vehicle_type_contradiction_raises(self, fake_vehicle_types) -> None:
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype(), 21: _FakePrototype()}
+        fu = [(1, "16.06.2025", "106/2")]
+
+        create_trips_and_vehicle_schedules(
+            _schedule(_fahrzeugumlauf(fu, {1: [11]}, fahrzeugtyp="GEG")), prototypes, 1, session, registry
+        )
+        with pytest.raises(ValueError, match="vehicle type"):
+            create_trips_and_vehicle_schedules(
+                _schedule(_fahrzeugumlauf(fu, {1: [21]}, fahrzeugtyp="EED")), prototypes, 1, session, registry
+            )
+
+    def test_betriebshof_contradiction_raises(self, fake_vehicle_types) -> None:
+        session = _FakeSession()
+        registry = RotationRegistry()
+        prototypes = {11: _FakePrototype(), 21: _FakePrototype()}
+        fu = [(1, "16.06.2025", "106/2")]
+
+        create_trips_and_vehicle_schedules(
+            _schedule(_fahrzeugumlauf(fu, {1: [11]}, betriebshof=9424)), prototypes, 1, session, registry
+        )
+        with pytest.raises(ValueError, match="Betriebshof"):
+            create_trips_and_vehicle_schedules(
+                _schedule(_fahrzeugumlauf(fu, {1: [21]}, betriebshof=9430)), prototypes, 1, session, registry
+            )
+
+
+def _rotation_fake(name: str, start_station: str, end_station: str, n_trips: int = 2) -> SimpleNamespace:
+    base = datetime(2025, 6, 16, 8, 0)
+    trips = []
+    for i in range(n_trips):
+        dep_station = start_station if i == 0 else "Mid"
+        arr_station = end_station if i == n_trips - 1 else "Mid"
+        trips.append(
+            SimpleNamespace(
+                route=SimpleNamespace(
+                    departure_station=SimpleNamespace(name=dep_station),
+                    arrival_station=SimpleNamespace(name=arr_station),
+                ),
+                departure_time=base + timedelta(hours=i),
+                arrival_time=base + timedelta(hours=i, minutes=30),
+                stop_times=[SimpleNamespace()],
+            )
+        )
+    return SimpleNamespace(name=name, id=1, trips=trips)
+
+
+class TestDeleteIncompleteRotations:
+    def test_depot_to_depot_kept(self) -> None:
+        rotation = _rotation_fake("100/1", "Betriebshof Cicerostr. Einsetzen", "Betriebshof Cicerostr. Aussetzen")
+        session = _FakeSession(rotations=[rotation])
+        delete_incomplete_rotations(1, session)
+        assert session.deleted == []
+
+    def test_cross_depot_working_kept(self) -> None:
+        # Real workings park overnight on a satellite Abstellflaeche: the endpoints are both
+        # depots but NOT the same station. These must survive.
+        rotation = _rotation_fake("194/21", "Betriebshof Lichtenberg Einsetzen", "Kaulsdorf Abstellfläche Aussetzen")
+        session = _FakeSession(rotations=[rotation])
+        delete_incomplete_rotations(1, session)
+        assert session.deleted == []
+
+    def test_window_edge_fragment_deleted_with_trips(self) -> None:
+        rotation = _rotation_fake("N02/71", "S+U Hauptbahnhof", "Betriebshof Indira-Gandhi-Str. Aussetzen")
+        session = _FakeSession(rotations=[rotation])
+        delete_incomplete_rotations(1, session)
+        assert rotation in session.deleted
+        for trip in rotation.trips:
+            assert trip in session.deleted
+            for stop_time in trip.stop_times:
+                assert stop_time in session.deleted
+
+    def test_rotation_without_trips_deleted(self) -> None:
+        rotation = SimpleNamespace(name="ghost", id=2, trips=[])
+        session = _FakeSession(rotations=[rotation])
+        delete_incomplete_rotations(1, session)
+        assert session.deleted == [rotation]

@@ -18,16 +18,17 @@ from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.bvgxml._pipeline import (
+    RotationRegistry,
     TimeProfile,
     ZERO_DISTANCE_SENTINEL_M,
     create_routes_and_time_profiles,
     create_stations,
     create_trip_prototypes,
     create_trips_and_vehicle_schedules,
+    delete_incomplete_rotations,
     fix_max_sequence,
     identify_and_delete_overlapping_rotations,
     load_and_validate_xml,
-    merge_identical_rotations,
     merge_identical_stations,
     recenter_station,
 )
@@ -43,8 +44,10 @@ class BvgxmlIngester(AbstractIngester):
     schedules are pickled under :meth:`path_for_uuid` for later use.
 
     ``ingest()`` re-uses the helpers in :mod:`eflips.ingest.bvgxml._pipeline` to write stations,
-    routes, trips and rotations into the database, then runs the post-processing fix-ups (geometry
-    recentring, identical-station/rotation merging, overlapping-rotation deletion, sequence reset).
+    routes, trips and rotations into the database — reassembling each vehicle working from its
+    per-line file slices via a shared :class:`RotationRegistry` — then runs the post-processing
+    fix-ups (geometry recentring, identical-station merging, incomplete-rotation deletion,
+    overlapping-rotation deletion, sequence reset).
     """
 
     def prepare(  # type: ignore[override]
@@ -180,10 +183,15 @@ class BvgxmlIngester(AbstractIngester):
                     else:
                         trip_prototypes[fahrt_id] = time_profile
 
+            # One registry for the whole import: it reassembles each physical vehicle working
+            # (which the export slices across one file per line it touches) into one rotation.
+            rotation_registry = RotationRegistry()
             for i, schedule in enumerate(schedules):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=ConsistencyWarning)
-                    create_trips_and_vehicle_schedules(schedule, trip_prototypes, scenario_id, session)
+                    create_trips_and_vehicle_schedules(
+                        schedule, trip_prototypes, scenario_id, session, rotation_registry
+                    )
                 report_subphase(5, i, n_schedules)
 
             stations_without_geom_q = (
@@ -222,7 +230,7 @@ class BvgxmlIngester(AbstractIngester):
             session.expire_all()
             report(8)
 
-            merge_identical_rotations(scenario_id, session)
+            delete_incomplete_rotations(scenario_id, session)
             report(9)
 
             identify_and_delete_overlapping_rotations(scenario_id, session)

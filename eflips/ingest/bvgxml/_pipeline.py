@@ -16,18 +16,23 @@ The pipeline runs in this order:
    ``Netzpunkt.haltestellenbereich`` FK and falls back to short-name prefix
    matching) and emits ``Route`` + ``AssocRouteStation`` rows.
 4. :func:`create_trip_prototypes` + :func:`create_trips_and_vehicle_schedules`
-   produce ``Rotation`` / ``Trip`` / ``StopTime`` rows.
+   produce ``Rotation`` / ``Trip`` / ``StopTime`` rows. The export slices the
+   data by Linie, so one physical vehicle working (``Fahrzeugumlauf``) appears
+   in every file whose line it touches, each copy carrying only that line's
+   trips. A cross-file :class:`RotationRegistry` reassembles those slices into
+   a single ``Rotation`` keyed by the working's explicit identity (the ordered
+   ``(UmlaufID, Kalenderdatum)`` pairs of its Umläufe) — no heuristics needed.
 5. :func:`merge_identical_stations` merges duplicate stations grouped by
    short-name prefix, with :data:`STATION_MERGE_GROUPS` as explicit overrides
    for sibling stations whose names don't share a prefix (e.g. depots).
-6. :func:`merge_identical_rotations` chains same-named rotation fragments
-   into a single depot→…→depot rotation. Chains that can't close (because
-   their other half is in an XML file outside the input set) are deleted
-   with a WARNING log — this is the "edge-of-window" cleanup. Depot
-   detection is governed by :data:`DEPOT_NAME_TOKENS`.
+6. :func:`delete_incomplete_rotations` deletes rotations that don't start
+   *and* end at a depot. After step 4's keyed reassembly these are genuine
+   window-edge fragments (the rest of the working lies outside the exported
+   time window); each deletion is logged with a WARNING. Depot detection is
+   governed by :data:`DEPOT_NAME_TOKENS`.
 7. :func:`identify_and_delete_overlapping_rotations` deletes rotations
-   whose trips overlap in time (typically caused by step 6 merging
-   incompatible fragments).
+   whose trips overlap in time (a safety net; after keyed reassembly an
+   overlap indicates contradictory input data).
 8. :func:`fix_max_sequence` repoints sequences so subsequent inserts don't
    collide with the IDs we set explicitly.
 
@@ -46,10 +51,10 @@ import sqlite3
 import statistics
 import warnings
 import zoneinfo
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import psycopg2
 from eflips.model import ConsistencyWarning, Station, Route, AssocRouteStation, StopTime
@@ -978,39 +983,152 @@ def create_trip_prototypes(
     return time_profiles_by_trip_id
 
 
+def _parse_kalenderdatum(value: str) -> date:
+    """Parse the German-format (``DD.MM.YYYY``) ``Kalenderdatum`` of an Umlauf."""
+    day, month, year = (int(part) for part in value.split("."))
+    return date(day=day, month=month, year=year)
+
+
+# The explicit identity of one physical vehicle working: the ordered (UmlaufID, Kalenderdatum)
+# pairs of the Umläufe grouped into one Fahrzeugumlauf element. Every per-line XML file that the
+# working touches repeats the *full* group (verified on the June 2025 BVG dataset: 13,968
+# Fahrzeugumlauf elements collapse into 10,365 groups with zero grouping conflicts), so this tuple
+# joins the per-line slices without any endpoint/time heuristics.
+FahrzeugumlaufKey = Tuple[Tuple[int, date], ...]
+
+
+@dataclass
+class RegisteredRotation:
+    """One physical vehicle working being reassembled from its per-line XML slices."""
+
+    rotation: eflips.model.Rotation
+    betriebshof: int  # home depot code of the Fahrzeugumlauf, used for cross-file consistency checks
+    name: str  # space-joined Umlaufbezeichnungen, e.g. "163/6 N63/9"
+    materialized_fahrt_ids: Set[int] = field(default_factory=set)
+
+
+class RotationRegistry:
+    """
+    Cross-file registry of physical vehicle workings, keyed by :data:`FahrzeugumlaufKey`.
+
+    The BVG-XML export slices the network by Linie: a vehicle working serving several lines
+    appears in each of those lines' files, each copy carrying only the trips of that file's line
+    (all other Fahrtreihenfolgen are empty). One ``RotationRegistry`` instance must be shared
+    across all files of one import so that :func:`create_trips_and_vehicle_schedules` adds every
+    slice's trips to the same :class:`eflips.model.Rotation`.
+
+    The registry is deliberately loud: if two files ever disagree on how Umläufe are grouped into
+    a Fahrzeugumlauf, :meth:`get` raises instead of letting two half-rotations coexist.
+    """
+
+    def __init__(self) -> None:
+        self._by_key: Dict[FahrzeugumlaufKey, RegisteredRotation] = {}
+        self._key_by_member: Dict[Tuple[int, date], FahrzeugumlaufKey] = {}
+
+    def get(self, key: FahrzeugumlaufKey) -> Optional[RegisteredRotation]:
+        """
+        Look up the working for ``key``, or ``None`` if it has not been seen yet.
+
+        :raises ValueError: if ``key`` is unknown but one of its (UmlaufID, Kalenderdatum) members
+            is already registered under a *different* key — i.e. two input files disagree on the
+            grouping of Umläufe into vehicle workings.
+        """
+        entry = self._by_key.get(key)
+        if entry is not None:
+            return entry
+        for member in key:
+            conflicting_key = self._key_by_member.get(member)
+            if conflicting_key is not None:
+                raise ValueError(
+                    f"Inconsistent Fahrzeugumlauf grouping between input files: Umlauf "
+                    f"(UmlaufID={member[0]}, Kalenderdatum={member[1]}) appears both in the group "
+                    f"{conflicting_key} and in the group {key}. The input files contradict each "
+                    f"other about which Umläufe form one vehicle working."
+                )
+        return None
+
+    def add(self, key: FahrzeugumlaufKey, entry: RegisteredRotation) -> None:
+        """Register a newly created working under ``key``."""
+        self._by_key[key] = entry
+        for member in key:
+            self._key_by_member[member] = key
+
+
 def create_trips_and_vehicle_schedules(
-    schedule: Linienfahrplan, trip_prototypes: Dict[int, None | TimeProfile], scenario_id: int, session: Session
+    schedule: Linienfahrplan,
+    trip_prototypes: Dict[int, None | TimeProfile],
+    scenario_id: int,
+    session: Session,
+    rotation_registry: RotationRegistry,
 ) -> None:
     """
-    Creates the trips and vehicle schedules from the parsed Linienfahrplan object
+    Creates the trips and vehicle schedules from the parsed Linienfahrplan object.
+
+    One :class:`eflips.model.Rotation` is created per physical vehicle working (Fahrzeugumlauf).
+    Because the export slices the data by Linie, the same working appears in every file whose line
+    it touches; ``rotation_registry`` (shared across all files of one import) joins those slices
+    back into a single rotation by the working's explicit :data:`FahrzeugumlaufKey`. Cross-file
+    contradictions (different vehicle type, home depot or Umlauf grouping for the same working, or
+    the same trip materialised twice) raise a ``ValueError`` rather than producing garbage
+    rotations.
+
     :param schedule: A parsed Linienfahrplan object
     :param trip_prototypes: A dictionary containing *all* the available time profiles, by their trip.ID. This (rather
            than the *schedule's* time profiles) is used, because the schedule might contain trips that are not in the
            schedule (if a vehicle from this line goes to another line)
     :param scenario_id: The scenario ID to use
     :param session: An open database session
+    :param rotation_registry: The registry joining per-line slices of the same vehicle working; use
+           one instance for all files of an import
     :return: Nothing. The trips are added to the database
     """
     logger = logging.getLogger(__name__)
 
     for fahrzeugumlauf in schedule.fahrzeugumlauf_daten.fahrzeugumlauf:
-        # The Fharzeugumlauf has an Umlaeufe object, which implies there could be multiple.
-        # We do not support this
-        vehicle_type = add_or_ret_vehicle_type(scenario_id, fahrzeugumlauf.fahrzeugtyp, session)
-        rotation = eflips.model.Rotation(
-            scenario_id=scenario_id,
-            id=None,
-            name="",
-            vehicle_type=vehicle_type,
-            allow_opportunity_charging=True,
+        key: FahrzeugumlaufKey = tuple(
+            (umlauf.umlauf_id, _parse_kalenderdatum(umlauf.kalenderdatum)) for umlauf in fahrzeugumlauf.umlaeufe.umlauf
         )
-        session.add(rotation)
-        rotation_trips = []
+        name = " ".join(umlauf.umlaufbezeichnung for umlauf in fahrzeugumlauf.umlaeufe.umlauf)
+        vehicle_type = add_or_ret_vehicle_type(scenario_id, fahrzeugumlauf.fahrzeugtyp, session)
+
+        entry = rotation_registry.get(key)
+        if entry is None:
+            rotation = eflips.model.Rotation(
+                scenario_id=scenario_id,
+                id=None,
+                name=name,
+                vehicle_type=vehicle_type,
+                allow_opportunity_charging=True,
+            )
+            session.add(rotation)
+            entry = RegisteredRotation(rotation=rotation, betriebshof=fahrzeugumlauf.betriebshof, name=name)
+            rotation_registry.add(key, entry)
+        else:
+            # Another file already carries this working; all copies must describe the same vehicle.
+            if entry.name != name:
+                raise ValueError(
+                    f"Vehicle working {key} is named {entry.name!r} in one input file but {name!r} "
+                    f"in another. The input files contradict each other."
+                )
+            if entry.rotation.vehicle_type is not vehicle_type:
+                raise ValueError(
+                    f"Vehicle working {name!r} ({key}) has vehicle type "
+                    f"{entry.rotation.vehicle_type.name_short!r} in one input file but "
+                    f"{vehicle_type.name_short!r} in another. The input files contradict each other."
+                )
+            if entry.betriebshof != fahrzeugumlauf.betriebshof:
+                raise ValueError(
+                    f"Vehicle working {name!r} ({key}) has Betriebshof {entry.betriebshof} in one "
+                    f"input file but {fahrzeugumlauf.betriebshof} in another. The input files "
+                    f"contradict each other."
+                )
+        rotation = entry.rotation
+
+        # This file's slice of the working: only the trips whose line is this file's line have a
+        # populated Fahrtreihenfolge here; the other lines' trips come from their own files.
+        slice_trips: List[eflips.model.Trip] = []
         for xml_rotation in fahrzeugumlauf.umlaeufe.umlauf:
-            date_german = xml_rotation.kalenderdatum.split(".")
-            the_date = date(day=int(date_german[0]), month=int(date_german[1]), year=int(date_german[2]))
-            rotation.name += f"{xml_rotation.umlaufbezeichnung} "
-            # Assemble the list of trips
+            the_date = _parse_kalenderdatum(xml_rotation.kalenderdatum)
             for umlaufteilgruppe in xml_rotation.umlaufteilgruppen.umlaufteilgruppe:
                 if umlaufteilgruppe.fahrtreihenfolge is None:
                     logger.info(
@@ -1018,7 +1136,6 @@ def create_trips_and_vehicle_schedules(
                     )
                     continue
                 # Make sure the vehicle type stays the same
-                part_trips = []
                 for vehicle_type_str in umlaufteilgruppe.fahrzeugtyp:
                     if vehicle_type_str != vehicle_type.name_short:
                         raise ValueError(
@@ -1027,54 +1144,59 @@ def create_trips_and_vehicle_schedules(
                             f"started as {vehicle_type.name_short!r} but Umlaufteilgruppe says "
                             f"{vehicle_type_str!r}."
                         )
-                    for fahrt in umlaufteilgruppe.fahrtreihenfolge.fahrt:
-                        if fahrt.fahrt_id not in trip_prototypes.keys():
-                            raise ValueError(
-                                f"Trip fahrt_id={fahrt.fahrt_id} referenced by Umlauf {xml_rotation.umlauf_id} "
-                                f"(bezeichnung={xml_rotation.umlaufbezeichnung!r}, date={the_date}) is not in "
-                                f"trip_prototypes. This usually means the XML file for the trip's line was not "
-                                f"included in the input zip."
-                            )
-                        tp = trip_prototypes[fahrt.fahrt_id]
-                        if tp is None:
-                            logger.info(
-                                f"Trip {fahrt.fahrt_id} from Umlauf {xml_rotation.umlauf_id} is from a pointless route. Skipping"
-                            )
-                            continue
-                        with session.no_autoflush:  # Get rid of spurious SAWarnings
-                            part_trips.append(tp.to_trip(rotation, the_date))
-                    rotation_trips.extend(part_trips)
+                for fahrt in umlaufteilgruppe.fahrtreihenfolge.fahrt:
+                    if fahrt.fahrt_id not in trip_prototypes.keys():
+                        raise ValueError(
+                            f"Trip fahrt_id={fahrt.fahrt_id} referenced by Umlauf {xml_rotation.umlauf_id} "
+                            f"(bezeichnung={xml_rotation.umlaufbezeichnung!r}, date={the_date}) is not in "
+                            f"trip_prototypes. This usually means the XML file for the trip's line was not "
+                            f"included in the input zip."
+                        )
+                    if fahrt.fahrt_id in entry.materialized_fahrt_ids:
+                        raise ValueError(
+                            f"Trip fahrt_id={fahrt.fahrt_id} of vehicle working {name!r} ({key}) is "
+                            f"materialised by more than one input file. The per-line slices of a "
+                            f"working must be disjoint; the input files contradict each other."
+                        )
+                    tp = trip_prototypes[fahrt.fahrt_id]
+                    if tp is None:
+                        logger.info(
+                            f"Trip {fahrt.fahrt_id} from Umlauf {xml_rotation.umlauf_id} is from a pointless route. Skipping"
+                        )
+                        continue
+                    entry.materialized_fahrt_ids.add(fahrt.fahrt_id)
+                    with session.no_autoflush:  # Get rid of spurious SAWarnings
+                        slice_trips.append(tp.to_trip(rotation, the_date))
 
-            ### SPECIAL FIXES
-            # Do some cleanup. There may be geographical inconsistencies caused by a trip's stop being different from the
-            # stop of the previous trip. This might be caused by a station having multiple "Haltestellenbereiche"
-            # We see if the first four letters of the stations short name are the same, and if so, we change the latter
-            # trip's departure station to the former trip's arrival station
-            for i in range(len(rotation_trips) - 1):
-                cur_trip = rotation_trips[i]
-                next_trip = rotation_trips[i + 1]
-                if cur_trip.stop_times[-1].station != next_trip.stop_times[0].station:
-                    # Two consecutive trips of the same rotation should pick up
-                    # where the previous trip left off. They sometimes don't
-                    # when the same physical place is split across multiple
-                    # Haltestellenbereich rows; merge_identical_stations should
-                    # clean it up later, so this is only an INFO log.
-                    cur_st = cur_trip.stop_times[-1].station
-                    next_st = next_trip.stop_times[0].station
-                    logger.info(
-                        "Rotation %r (date=%s): trip arriving at %r (id=%d) is followed by "
-                        "a trip departing from %r (id=%d). If these are not merged later, "
-                        "the rotation will be flagged for geometric inconsistency.",
-                        rotation.name.strip() or "<pending>",
-                        the_date,
-                        cur_st.name,
-                        cur_st.id,
-                        next_st.name,
-                        next_st.id,
-                    )
-            session.add_all(rotation_trips)
-
-        rotation.name = rotation.name.strip()
+        ### SPECIAL FIXES
+        # Do some cleanup. There may be geographical inconsistencies caused by a trip's stop being different from the
+        # stop of the previous trip. This might be caused by a station having multiple "Haltestellenbereiche"
+        # We see if the first four letters of the stations short name are the same, and if so, we change the latter
+        # trip's departure station to the former trip's arrival station
+        # (Only this file's slice is checked: consecutive trips of the same line. Trips of the
+        # working's other lines interleave temporally but live in other files' slices.)
+        for i in range(len(slice_trips) - 1):
+            cur_trip = slice_trips[i]
+            next_trip = slice_trips[i + 1]
+            if cur_trip.stop_times[-1].station != next_trip.stop_times[0].station:
+                # Two consecutive trips of the same rotation should pick up
+                # where the previous trip left off. They sometimes don't
+                # when the same physical place is split across multiple
+                # Haltestellenbereich rows; merge_identical_stations should
+                # clean it up later, so this is only an INFO log.
+                cur_st = cur_trip.stop_times[-1].station
+                next_st = next_trip.stop_times[0].station
+                logger.info(
+                    "Rotation %r: trip arriving at %r (id=%d) is followed by "
+                    "a trip departing from %r (id=%d). If these are not merged later, "
+                    "the rotation will be flagged for geometric inconsistency.",
+                    name,
+                    cur_st.name,
+                    cur_st.id,
+                    next_st.name,
+                    next_st.id,
+                )
+        session.add_all(slice_trips)
 
 
 def recenter_station(station: eflips.model.Station, session: Session) -> None:
@@ -1367,22 +1489,23 @@ def _name_is_depot(name: str | None) -> bool:
     return any(token in name for token in DEPOT_NAME_TOKENS)
 
 
-def merge_identical_rotations(scenario_id: int, session: Session) -> None:
+def delete_incomplete_rotations(scenario_id: int, session: Session) -> None:
     """
-    Merge rotations with identical names by chaining them depot→…→depot.
+    Delete rotations that do not form a complete depot-to-depot vehicle working.
 
-    Different parts of a single physical rotation may live in different XML
-    files (because the XML is sliced by Linie), so the ingester produces
-    multiple :class:`Rotation` rows for what is conceptually one rotation.
-    This function joins those fragments back together when they form a closed
-    depot-to-depot chain, and deletes fragments that don't (those are partial
-    rotations whose other halves live in XML files outside the input zip —
-    i.e. they fall off the edge of the time window covered by the input).
+    Rotations are reassembled from the per-line XML slices by their explicit Fahrzeugumlauf
+    identity (see :func:`create_trips_and_vehicle_schedules`), so a rotation that does not start
+    *and* end at a depot is a genuine window-edge fragment: the rest of the vehicle working lies
+    outside the time window covered by the input files (e.g. a night bus whose evening half
+    belongs to the day before the export starts). Downstream consumers require depot-to-depot
+    rotations, so such fragments are deleted rather than passed on.
 
-    All deletions are logged at WARNING level with the rotation name, the
-    span of trip dates / endpoint stations involved, and how many trips are
-    being dropped, so callers can tell how much data is lost to edge
-    truncation.
+    The two endpoints do **not** need to be the same depot: real workings park overnight on a
+    satellite Abstellfläche (Betriebshof Lichtenberg → Kaulsdorf Abstellfläche and back exists in
+    the June 2025 BVG dataset). Depot detection is by station name via :data:`DEPOT_NAME_TOKENS`.
+
+    All deletions are logged at WARNING level with the rotation name, its time span, endpoint
+    stations and trip count, so callers can tell how much data is lost to edge truncation.
 
     :param scenario_id: the scenario ID to use
     :param session: an open database session
@@ -1390,129 +1513,52 @@ def merge_identical_rotations(scenario_id: int, session: Session) -> None:
     """
     logger = logging.getLogger(__name__)
 
-    rotation_names = (
-        session.query(eflips.model.Rotation.name)
-        .filter(eflips.model.Rotation.scenario_id == scenario_id)
-        .group_by(eflips.model.Rotation.name)
-        .all()
-    )
-    for rotation_name in rotation_names:
-        all_rots_for_name = (
-            session.query(eflips.model.Rotation)
-            .filter(eflips.model.Rotation.name == rotation_name[0])
-            .filter(eflips.model.Rotation.scenario_id == scenario_id)
-            .all()
-        )
-        # Order them by the first trip's departure time
-        all_rots_for_name = sorted(all_rots_for_name, key=lambda rot: rot.trips[0].departure_time)
-
-        list_of_rotation_id_tuples_to_merge: List[List[int]] = []
-        rotation_ids_to_merge: List[int] = []
-
-        for rotation in all_rots_for_name:
-            first_station_name = rotation.trips[0].route.departure_station.name
-            last_station_name = rotation.trips[-1].route.arrival_station.name
-            first_station_departure_time = rotation.trips[0].departure_time
-            last_station_arrival_time = rotation.trips[-1].arrival_time
-
-            if _name_is_depot(first_station_name) and _name_is_depot(last_station_name):
-                # This is a rotation that starts and ends at the depot
-                # We don't need to merge it with anything
-                continue
-            elif _name_is_depot(first_station_name) and not _name_is_depot(last_station_name):
-                # This rotation starts at the depot and ends somewhere else
-                # Start a new list after appending the current list to the list of lists
-                list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
-                rotation_ids_to_merge = [rotation.id]
-            elif not _name_is_depot(first_station_name) and _name_is_depot(last_station_name):
-                # This rotation starts somewhere else and ends at the depot
-                # Append the current rotation to the list
-                rotation_ids_to_merge.append(rotation.id)
-                list_of_rotation_id_tuples_to_merge.append(rotation_ids_to_merge)
-                rotation_ids_to_merge = []
-            elif not _name_is_depot(first_station_name) and not _name_is_depot(last_station_name):
-                # This rotation starts and ends somewhere else
-                # Append the current rotation to the list
-                rotation_ids_to_merge.append(rotation.id)
-            else:
-                # All four (depot, depot) / (depot, ¬depot) / (¬depot, depot) / (¬depot, ¬depot)
-                # branches are covered above; this is genuinely unreachable.
-                raise ValueError(
-                    f"Unreachable branch in merge_identical_rotations for rotation "
-                    f"name={rotation.name!r} id={rotation.id} "
-                    f"start={first_station_name!r} end={last_station_name!r}."
-                )
-
-        # Remove empty lists
-        list_of_rotation_id_tuples_to_merge = [x for x in list_of_rotation_id_tuples_to_merge if len(x) > 0]
-
-        # Go through the list of lists and merge the rotations, if they form a valid rotation
-        for rotation_ids_to_merge in list_of_rotation_id_tuples_to_merge:
-            rotations = (
-                session.query(eflips.model.Rotation).filter(eflips.model.Rotation.id.in_(rotation_ids_to_merge)).all()
+    rotations = session.query(eflips.model.Rotation).filter(eflips.model.Rotation.scenario_id == scenario_id).all()
+    n_deleted = 0
+    n_trips_deleted = 0
+    for rotation in rotations:
+        if len(rotation.trips) == 0:
+            # Possible if every referenced trip sat on a "pointless" (single-station) route.
+            logger.warning(
+                "Deleting rotation name=%r (id=%d): it contains no trips at all.",
+                rotation.name,
+                rotation.id,
             )
-            # Order the rotations by the first trip's departure time
-            rotations = sorted(rotations, key=lambda rot: rot.trips[0].departure_time)
+            session.delete(rotation)
+            n_deleted += 1
+            continue
 
-            # Check whether the rotations can be merged
-            # The first station of the first rotation must be the same as the last station of the last rotation
-            # And both must contain "Betriebshof"
-            if (
-                rotations[0].trips[0].route.departure_station.name != rotations[-1].trips[-1].route.arrival_station.name
-                or not (_name_is_depot(rotations[0].trips[0].route.departure_station.name))
-                or not (_name_is_depot(rotations[-1].trips[-1].route.arrival_station.name))
-            ):
-                first_dep = rotations[0].trips[0].route.departure_station.name
-                last_arr = rotations[-1].trips[-1].route.arrival_station.name
-                first_time = rotations[0].trips[0].departure_time
-                last_time = rotations[-1].trips[-1].arrival_time
-                trip_count = sum(len(r.trips) for r in rotations)
-                if first_dep == last_arr:
-                    reason = (
-                        f"endpoints match ({first_dep!r}) but are not a known depot. "
-                        f"Add the station to DEPOT_NAME_TOKENS if it should be treated as one."
-                    )
-                else:
-                    reason = (
-                        f"chain start {first_dep!r} != chain end {last_arr!r}; "
-                        f"this is the typical signature of a partial rotation whose other "
-                        f"half is in an XML file outside the input zip (edge-of-window)."
-                    )
-                logger.warning(
-                    "Deleting %d-fragment rotation chain name=%r (%d trips, %s → %s): %s",
-                    len(rotations),
-                    rotations[0].name,
-                    trip_count,
-                    first_time.isoformat() if first_time else None,
-                    last_time.isoformat() if last_time else None,
-                    reason,
-                )
-                # If the merge is not possible we delete these rotations
-                for rotation in rotations:
-                    for trip in rotation.trips:
-                        for stop_time in trip.stop_times:
-                            session.delete(stop_time)
-                        session.delete(trip)
-                    session.delete(rotation)
-            else:
-                # Merge the rotations by creating a new rotation
-                new_rotation = eflips.model.Rotation(
-                    name=rotations[0].name,
-                    scenario_id=rotations[0].scenario_id,
-                    vehicle_type_id=rotations[0].vehicle_type_id,
-                    allow_opportunity_charging=rotations[0].allow_opportunity_charging,
-                )
-                session.add(new_rotation)
-                session.flush()
-                for rotation in rotations:
-                    session.query(eflips.model.Trip).filter(eflips.model.Trip.rotation_id == rotation.id).update(
-                        {"rotation_id": new_rotation.id}
-                    )
-                    session.refresh(
-                        rotation
-                    )  # Refresh the rotation object to get the updated trips (there are now none)
-                    session.delete(rotation)
-                    session.flush()
+        first_station_name = rotation.trips[0].route.departure_station.name
+        last_station_name = rotation.trips[-1].route.arrival_station.name
+        if _name_is_depot(first_station_name) and _name_is_depot(last_station_name):
+            continue
+
+        logger.warning(
+            "Deleting incomplete rotation name=%r (%d trips, %s → %s, %r → %r): it does not run "
+            "depot-to-depot. This is the signature of a window-edge fragment — the rest of the "
+            "vehicle working lies outside the time window covered by the input files. If the "
+            "endpoint *is* a depot, add its name to DEPOT_NAME_TOKENS.",
+            rotation.name,
+            len(rotation.trips),
+            rotation.trips[0].departure_time.isoformat(),
+            rotation.trips[-1].arrival_time.isoformat(),
+            first_station_name,
+            last_station_name,
+        )
+        n_trips_deleted += len(rotation.trips)
+        for trip in rotation.trips:
+            for stop_time in trip.stop_times:
+                session.delete(stop_time)
+            session.delete(trip)
+        session.delete(rotation)
+        n_deleted += 1
+    session.flush()
+    logger.info(
+        "Incomplete-rotation cleanup: deleted %d of %d rotations (%d trips).",
+        n_deleted,
+        len(rotations),
+        n_trips_deleted,
+    )
 
 
 def identify_and_delete_overlapping_rotations(scenario_id: int, session: Session) -> None:
