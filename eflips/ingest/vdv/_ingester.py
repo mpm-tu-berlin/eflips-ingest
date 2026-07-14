@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, IO, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, IO, List, Optional, Set, Tuple, Union, cast
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
@@ -358,6 +358,9 @@ _ONR_TYP_BHOF = 2
 _ONR_TYP_BP = 6
 _ONR_TYP_DEPOT = frozenset({_ONR_TYP_BHOF, _ONR_TYP_BP})
 
+# Opaque identity of one fragment: unique and sortable, contents otherwise uninterpreted.
+FragmentKey = Tuple[Any, ...]
+
 
 @dataclass(frozen=True)
 class RotationFragment:
@@ -368,7 +371,7 @@ class RotationFragment:
     with equality semantics (ORM instances in production, plain strings in tests).
     """
 
-    key: Tuple  # unique and sortable; used for deterministic tie-breaking
+    key: FragmentKey  # unique and sortable; used for deterministic tie-breaking
     start_station: object
     start_time: datetime
     end_station: object
@@ -381,7 +384,7 @@ class RotationFragment:
 
 def match_rotation_fragments(
     fragments: List[RotationFragment], max_gap: timedelta = _MAX_CHAIN_GAP
-) -> List[Tuple[Tuple, Tuple]]:
+) -> List[Tuple[FragmentKey, FragmentKey]]:
     """
     Match open rotation fragments into (predecessor, successor) pairs under the hard constraints
     described above. Rotations that start *and* end at a depot are closed and never take part.
@@ -394,7 +397,7 @@ def match_rotation_fragments(
     for f in sorted((f for f in fragments if not f.end_at_depot), key=lambda f: f.key):
         tails_by_station_and_type[(f.end_station, f.vehicle_type)].append(f)
 
-    candidates: List[Tuple[timedelta, Tuple, Tuple]] = []
+    candidates: List[Tuple[timedelta, FragmentKey, FragmentKey]] = []
     for s in sorted((f for f in fragments if not f.start_at_depot), key=lambda f: f.key):
         for p in tails_by_station_and_type.get((s.start_station, s.vehicle_type), []):
             if p.key == s.key:
@@ -408,9 +411,9 @@ def match_rotation_fragments(
     # Greedy 1:1, smallest gap first. Cycles cannot arise: every link consumes non-negative time and
     # every fragment has positive duration, so a chain can never return to its own start.
     candidates.sort()
-    used_pred: set = set()
-    used_succ: set = set()
-    pairs: List[Tuple[Tuple, Tuple]] = []
+    used_pred: Set[FragmentKey] = set()
+    used_succ: Set[FragmentKey] = set()
+    pairs: List[Tuple[FragmentKey, FragmentKey]] = []
     for gap, p_key, s_key in candidates:
         if p_key in used_pred or s_key in used_succ:
             continue
@@ -422,9 +425,9 @@ def match_rotation_fragments(
 
 def chain_rotation_fragments(
     session: Session,
-    rotations_by_key: Dict[Tuple, Rotation],
-    home_depot_by_rotation_pk: Dict[Tuple, Optional[int]],
-    depot_stations: set,
+    rotations_by_key: Dict[Tuple[Any, ...], Rotation],
+    home_depot_by_rotation_pk: Dict[Tuple[Any, ...], Optional[int]],
+    depot_stations: Set[Any],
     debug: "_DebugSink",
     max_gap: timedelta = _MAX_CHAIN_GAP,
 ) -> None:
@@ -441,7 +444,7 @@ def chain_rotation_fragments(
     logger = logging.getLogger(__name__)
 
     fragments: List[RotationFragment] = []
-    rotation_by_fragment_key: Dict[Tuple, Rotation] = {}
+    rotation_by_fragment_key: Dict[FragmentKey, Rotation] = {}
     for key in sorted(rotations_by_key.keys()):
         rotation = rotations_by_key[key]
         if len(rotation.trips) == 0:
@@ -475,7 +478,7 @@ def chain_rotation_fragments(
     # mid-chain, the aborted successor is re-queued here as a fresh root so its own downstream
     # links still get built instead of being silently dropped with the discarded predecessor.
     roots = deque(sorted(k for k in succ_of.keys() if k not in has_pred))
-    processed: set = set()
+    processed: Set[FragmentKey] = set()
     while roots:
         root_key = roots.popleft()
         if root_key in processed:
@@ -1160,9 +1163,7 @@ class VdvIngester(AbstractIngester):
                 # boundary) into full depot-to-depot rotations. See the module comment on
                 # match_rotation_fragments for the evidence behind the matching rules.
                 if not os.environ.get("EFLIPS_VDV_DISABLE_FRAGMENT_CHAINING"):
-                    depot_stations = {
-                        station for pk, station in stations_by_vdv_pk.items() if pk[1] in _ONR_TYP_DEPOT
-                    }
+                    depot_stations = {station for pk, station in stations_by_vdv_pk.items() if pk[1] in _ONR_TYP_DEPOT}
                     home_depot_by_rotation_pk = {
                         pk: vdv_rotation.bhof_ort_nr for pk, vdv_rotation in vdv_rotations_by_pk.items()
                     }

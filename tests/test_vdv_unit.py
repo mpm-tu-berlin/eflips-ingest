@@ -1263,7 +1263,7 @@ class TestChainRotationFragments:
             "VT",
             [
                 _FakeTrip("SB", "SC", 9.49, 13.0),  # first by departure, hidden late arrival
-                _FakeTrip("SB", "SC", 9.5, 10.0),   # last by departure -> fragment end = SC/10:00
+                _FakeTrip("SB", "SC", 9.5, 10.0),  # last by departure -> fragment end = SC/10:00
             ],
         )
         c = _FakeRotation("C", "VT", [_FakeTrip("SC", "SD", 10.5, 11.0)])
@@ -1279,11 +1279,11 @@ class TestChainRotationFragments:
             debug=_DebugSink(),
         )
 
-        assert a.name == "A + B"          # A->B was fine
-        assert c.name == "C + D"          # C->D survived despite B->C being rejected
-        assert b in session.deleted       # B was merged into A
-        assert d in session.deleted       # D was merged into C
-        assert c not in session.deleted   # C is a chain head, not consumed
+        assert a.name == "A + B"  # A->B was fine
+        assert c.name == "C + D"  # C->D survived despite B->C being rejected
+        assert b in session.deleted  # B was merged into A
+        assert d in session.deleted  # D was merged into C
+        assert c not in session.deleted  # C is a chain head, not consumed
 
     def test_bp_endpoint_not_treated_as_open_fragment(self) -> None:
         # A rotation closing at a BP-typed depot station must not be chained onto an unrelated
