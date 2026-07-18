@@ -46,6 +46,7 @@ deployment surfaces a new edge case:
   to a single station.
 """
 import logging
+import math
 import os
 import sqlite3
 import statistics
@@ -646,6 +647,7 @@ def create_routes_and_time_profiles(
         # This way, we are sure the departure and arrival stations match as well as the total distance
         assocs: List[eflips.model.AssocRouteStation] = []
         elapsed_distance = 0.0
+        distance_is_estimated = False
 
         time_profile_points: Dict[
             int, List[TimeProfile.TimeProfilePoint]
@@ -683,11 +685,25 @@ def create_routes_and_time_profiles(
                 elapsed_distance += segment.streckenlaenge
 
             # SPECIAL FIXES
-            # Some routes have a distance of zero even once the last point is reached
+            # Some routes have a distance of zero even once the last point is reached, because the export
+            # carries no Streckenlänge for the depot connection anywhere. Estimate the distance as
+            # crow-fly × detour factor from the grid-point coordinates (Soldner, in millimeters).
             if i == len(route.punktfolge.punkt) - 1 and elapsed_distance == 0:
-                # We mark these by putting an obscenely large number in the distance
-                logger.warning(f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end.")
-                elapsed_distance += ZERO_DISTANCE_SENTINEL_M
+                first_gp = grid_points[route.punktfolge.punkt[0].netzpunkt]
+                last_gp = grid_points[route.punktfolge.punkt[-1].netzpunkt]
+                crow_fly_m = (
+                    math.hypot(
+                        first_gp.xkoordinate - last_gp.xkoordinate,
+                        first_gp.ykoordinate - last_gp.ykoordinate,
+                    )
+                    / 1000.0
+                )
+                elapsed_distance = max(CROW_FLY_DETOUR_FACTOR * crow_fly_m, MIN_ESTIMATED_DISTANCE_M)
+                distance_is_estimated = True
+                logger.warning(
+                    f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end. "
+                    f"Estimating {elapsed_distance:.0f} m from the crow-fly distance."
+                )
 
             # Some time profiles have a zero time at the end
             if i == len(route.punktfolge.punkt) - 1:
@@ -698,13 +714,9 @@ def create_routes_and_time_profiles(
                         )
 
                         SPEED = 30 / 3.6  # 30 km/h in m/s
-                        if elapsed_distance != 0:
-                            duration = elapsed_distance / SPEED
-                        else:
-                            logger.warning(
-                                f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end. Calculating duration with a fixed speed of 30 km/h and a distance of 1 km."
-                            )
-                            duration = 1000 / SPEED
+                        # elapsed_distance is always usable here: if the route also had a zero
+                        # distance, it has already been replaced by the crow-fly estimate above.
+                        duration = elapsed_distance / SPEED
 
                         # Now, depending on whether it is an EInsetzfahrt or Aussetzfahrt, we shoft the beginning forward
                         # or the end backward
@@ -871,6 +883,8 @@ def create_routes_and_time_profiles(
             first_grid_point=grid_points[route.punktfolge.punkt[0].netzpunkt],
             last_grid_point=grid_points[route.punktfolge.punkt[-1].netzpunkt],
         )
+        if distance_is_estimated:
+            db_route.name = "CHECK DISTANCE: " + db_route.name
 
         # Now we can check if there already is a route with the same assocs.
         # We compare by station identity and elapsed_distance rounded to mm —
@@ -1438,14 +1452,18 @@ def merge_identical_stations(scenario_id: int, session: Session) -> None:
 DEPOT_NAME_TOKENS: Tuple[str, ...] = ("Betriebshof", "Abstellfläche")
 
 
-# Sentinel applied to ``Route.distance`` when ``create_routes_and_time_profiles``
-# encounters a Punktfolge that walked back to its own start (cumulative
-# Streckenlänge of 0). The post-processing step in :class:`BvgxmlIngester`
-# rewrites these distances using the geometric distance between the
-# departure and arrival stations and prepends "CHECK DISTANCE:" to the route
-# name. One million kilometers is large enough that no real Berlin route
-# could ever match it, so we can use it as a query filter cleanly.
-ZERO_DISTANCE_SENTINEL_M: float = 1e6 * 1000  # one million kilometers, in meters
+# Some routes (in practice: 2-point depot pull-in/pull-out legs) have a
+# cumulative Streckenlänge of 0 because the export carries no length for the
+# depot connection anywhere. ``create_routes_and_time_profiles`` estimates the
+# distance as crow-fly × this detour factor and prepends "CHECK DISTANCE:" to
+# the route name. The factor was validated against point pairs in the Berlin
+# 2025-06 export where other time profiles carry real driving times
+# (crow-fly × 1.4 at 30 km/h reproduces them to within ~±30 %).
+CROW_FLY_DETOUR_FACTOR: float = 1.4
+
+# Floor for the estimated distance, used when even the crow-fly distance is
+# zero (departure and arrival grid points are co-located).
+MIN_ESTIMATED_DISTANCE_M: float = 1000.0
 
 
 # Station-merge overrides for sibling stations whose short names don't share a
