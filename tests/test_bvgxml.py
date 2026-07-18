@@ -1,5 +1,7 @@
 import glob
+import math
 import os
+from datetime import timedelta
 from pathlib import Path
 from typing import List, Dict
 from uuid import UUID, uuid4
@@ -12,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from eflips.ingest.bvgxml import BvgxmlIngester
 from eflips.ingest.bvgxml._pipeline import (
+    CROW_FLY_DETOUR_FACTOR,
+    MIN_ESTIMATED_DISTANCE_M,
     load_and_validate_xml,
     create_stations,
     setup_working_dictionaries,
@@ -122,6 +126,75 @@ class TestBVGXML:
                 for assoc in route.assoc_route_stations:
                     assert assoc.station is not None
                     assert assoc.location is not None
+
+    def test_zero_distance_zero_time_route_is_estimated(self, linienfahrplan):
+        """
+        Regression test: depot pull-in/pull-out legs whose Streckenlänge AND driving times are
+        all zero in the export used to receive a 1e9 m sentinel distance, which the zero-time
+        fallback then turned into a ~3.8 year duration. Both values must now be estimated from
+        the crow-fly distance between the first and last grid point.
+        """
+        engine = create_engine(os.environ["DATABASE_URL"])
+        eflips.model.Base.metadata.drop_all(engine)
+        eflips.model.setup_database(engine)
+
+        # Strip both the segment lengths and the driving times from one Einsetzfahrt (lfd_nr 1,
+        # EPkt → BPunkt) and one Aussetzfahrt (lfd_nr 2, BPunkt → APkt), mirroring the broken
+        # depot legs observed in real exports.
+        strecken = {s.id: s for s in linienfahrplan.streckennetz_daten.strecken.strecke}
+        grid_points = {gp.nummer: gp for gp in linienfahrplan.streckennetz_daten.netzpunkte.netzpunkt}
+        routes = {r.lfd_nr: r for r in linienfahrplan.linien_daten.linie.routen_daten.route}
+        expected_distances: Dict[int, float] = {}
+        for lfd_nr in (1, 2):
+            route = routes[lfd_nr]
+            for strecke in route.streckenfolge.strecke:
+                strecken[strecke.strecken_id].streckenlaenge = 0
+            for fahrzeitprofil in route.fahrzeitprofile.fahrzeitprofil:
+                for punkt in fahrzeitprofil.fahrzeitprofilpunkte.punkt:
+                    punkt.streckenfahrzeit = 0
+            first_gp = grid_points[route.punktfolge.punkt[0].netzpunkt]
+            last_gp = grid_points[route.punktfolge.punkt[-1].netzpunkt]
+            crow_fly_m = (
+                math.hypot(
+                    first_gp.xkoordinate - last_gp.xkoordinate,
+                    first_gp.ykoordinate - last_gp.ykoordinate,
+                )
+                / 1000.0
+            )
+            expected_distances[lfd_nr] = max(CROW_FLY_DETOUR_FACTOR * crow_fly_m, MIN_ESTIMATED_DISTANCE_M)
+
+        with Session(engine) as session:
+            scenario = eflips.model.Scenario(
+                name="Test Scenario",
+            )
+            session.add(scenario)
+            session.flush()
+            scenario_id = scenario.id
+
+            station_mapping: dict[int, eflips.model.Station] = {}
+            create_stations(linienfahrplan, scenario_id, session, station_mapping)
+            trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
+                linienfahrplan, scenario_id, session, station_mapping
+            )
+
+            SPEED = 30 / 3.6  # 30 km/h in m/s
+            for lfd_nr in (1, 2):
+                db_route = db_routes_by_lfd_nr[lfd_nr]
+                assert db_route is not None
+                assert db_route.distance == pytest.approx(expected_distances[lfd_nr])
+                assert db_route.name.startswith("CHECK DISTANCE: ")
+
+                expected_duration = timedelta(seconds=expected_distances[lfd_nr] / SPEED)
+                assert expected_duration < timedelta(hours=2)
+                for points in trip_time_profiles[lfd_nr].values():
+                    if lfd_nr == 1:
+                        # Einsetzfahrt: the start is shifted back by the estimated duration
+                        offset = points[0].arrival_offset_from_start
+                        assert offset.total_seconds() == pytest.approx(-expected_duration.total_seconds())
+                    else:
+                        # Aussetzfahrt: the end is extended by the estimated duration
+                        offset = points[-1].arrival_offset_from_start
+                        assert offset.total_seconds() == pytest.approx(expected_duration.total_seconds())
 
     def test_create_trip_prototypes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])

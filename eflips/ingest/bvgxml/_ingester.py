@@ -12,15 +12,12 @@ from zipfile import BadZipFile, ZipFile
 
 import eflips.model
 from eflips.model import ConsistencyWarning, create_engine
-from geoalchemy2.functions import ST_Distance
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
 from eflips.ingest.bvgxml._pipeline import (
     RotationRegistry,
     TimeProfile,
-    ZERO_DISTANCE_SENTINEL_M,
     create_routes_and_time_profiles,
     create_stations,
     create_trip_prototypes,
@@ -206,23 +203,9 @@ class BvgxmlIngester(AbstractIngester):
             session.expire_all()
             report(6)
 
-            long_route_q = (
-                session.query(eflips.model.Route)
-                .filter(eflips.model.Route.scenario_id == scenario_id)
-                .filter(eflips.model.Route.distance >= ZERO_DISTANCE_SENTINEL_M)
-            )
-            for route in long_route_q:
-                first_point = route.departure_station.geom
-                last_point = route.arrival_station.geom
-                first_point_soldner = func.ST_Transform(first_point, 3068)
-                last_point_soldner = func.ST_Transform(last_point, 3068)
-                dist = session.query(ST_Distance(first_point_soldner, last_point_soldner)).one()[0]
-                with session.no_autoflush:
-                    route.distance = dist
-                    route.assoc_route_stations[-1].elapsed_distance = dist
-                route.name = "CHECK DISTANCE: " + route.name
-            session.flush()
-            session.expire_all()
+            # Phase 7 used to rewrite sentinel-marked zero-distance routes here; the
+            # pipeline now estimates those distances directly, so the phase is a no-op
+            # kept only to preserve the progress-bar numbering.
             report(7)
 
             merge_identical_stations(scenario_id, session)
