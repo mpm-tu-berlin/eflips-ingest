@@ -716,7 +716,16 @@ def create_routes_and_time_profiles(
                         SPEED = 30 / 3.6  # 30 km/h in m/s
                         # elapsed_distance is always usable here: if the route also had a zero
                         # distance, it has already been replaced by the crow-fly estimate above.
-                        duration = elapsed_distance / SPEED
+                        # Round to whole seconds: every other schedule timestamp in the system is
+                        # whole-second (or coarser) precision, and downstream consumers (SimBA's
+                        # own std/atd int-seconds conversion, ebustoolbox.tasks.consolidate_socs'
+                        # strict time_end == time_start check) assert exact equality between
+                        # chained trip/event boundaries. A fractional-second value here is enough
+                        # to trip those asserts even though nothing is actually "wrong".
+                        # ceil (not round) and a floor of 1s: elapsed_distance is always > 0 here,
+                        # but for very short real distances round() could floor to 0 seconds,
+                        # recreating the zero-duration trip this fallback exists to prevent.
+                        duration = max(1, math.ceil(elapsed_distance / SPEED))
 
                         # Now, depending on whether it is an EInsetzfahrt or Aussetzfahrt, we shoft the beginning forward
                         # or the end backward
