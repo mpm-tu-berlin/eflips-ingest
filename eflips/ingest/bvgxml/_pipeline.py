@@ -14,7 +14,11 @@ The pipeline runs in this order:
    resolving each Netzpunkt to a parent station via
    :func:`add_or_ret_station_for_grid_point` (which prefers the explicit
    ``Netzpunkt.haltestellenbereich`` FK and falls back to short-name prefix
-   matching) and emits ``Route`` + ``AssocRouteStation`` rows.
+   matching) and emits ``Route`` + ``AssocRouteStation`` rows. Routes whose
+   Punktfolge the export collapsed to the endpoints of the run are restored
+   beforehand by :func:`reconstruct_collapsed_route`; the Streckenfolge and the
+   Fahrzeitprofile are matched onto the points by :func:`segments_for_hops` and
+   :func:`driving_times_for_points` rather than by position.
 4. :func:`create_trip_prototypes` + :func:`create_trips_and_vehicle_schedules`
    produce ``Rotation`` / ``Trip`` / ``StopTime`` rows. The export slices the
    data by Linie, so one physical vehicle working (``Fahrzeugumlauf``) appears
@@ -52,7 +56,7 @@ import sqlite3
 import statistics
 import warnings
 import zoneinfo
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -387,6 +391,326 @@ def setup_working_dictionaries(
     return grid_points, segments, route_datas, route_lfd_nrs
 
 
+def estimated_distance_m(
+    first_grid_point: Linienfahrplan.StreckennetzDaten.Netzpunkte.Netzpunkt,
+    last_grid_point: Linienfahrplan.StreckennetzDaten.Netzpunkte.Netzpunkt,
+) -> float:
+    """
+    Estimate a driving distance the export does not give us, from the grid point coordinates.
+
+    The coordinates are Soldner, in millimeters. The crow-fly distance between them is scaled by
+    :data:`CROW_FLY_DETOUR_FACTOR` and floored at :data:`MIN_ESTIMATED_DISTANCE_M`.
+
+    :param first_grid_point: The grid point the vehicle drives from
+    :param last_grid_point: The grid point the vehicle drives to
+    :return: The estimated distance in meters
+    """
+    crow_fly_m = (
+        math.hypot(
+            first_grid_point.xkoordinate - last_grid_point.xkoordinate,
+            first_grid_point.ykoordinate - last_grid_point.ykoordinate,
+        )
+        / 1000.0
+    )
+    return max(CROW_FLY_DETOUR_FACTOR * crow_fly_m, MIN_ESTIMATED_DISTANCE_M)
+
+
+def segments_for_hops(
+    route: Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
+    segments: Dict[int, Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+    line_name: str,
+) -> List[None | Linienfahrplan.StreckennetzDaten.Strecken.Strecke]:
+    """
+    Match a route's ``Streckenfolge`` onto the hops between the points of its ``Punktfolge``.
+
+    A well-formed route carries exactly one ``Strecke`` per hop, in order, so ``strecke[i - 1]``
+    would be the segment leading to point ``i``. That positional assumption breaks on routes whose
+    ``Punktfolge`` the export has collapsed to its endpoints (see :func:`driving_times_for_points`):
+    there is no ``Strecke`` for the collapsed hop, so indexing by position either raises an
+    ``IndexError`` or — worse — silently charges the tail segment's length to the wrong hop.
+    We therefore match the segments by their own ``Startpunkt``/``Endpunkt`` instead.
+
+    :param route: The route whose Streckenfolge is to be matched
+    :param segments: All ``Strecken`` of the schedule, by their ID
+    :param line_name: The name of the line, for logging only
+    :return: One entry per hop, ``None`` where the export carries no ``Strecke`` for that hop. Entry
+             ``j`` is the segment from ``punkt[j]`` to ``punkt[j + 1]``.
+    """
+    logger = logging.getLogger(__name__)
+
+    points = route.punktfolge.punkt
+    route_segments = [segments[strecke.strecken_id] for strecke in route.streckenfolge.strecke]
+
+    hop_segments: List[None | Linienfahrplan.StreckennetzDaten.Strecken.Strecke] = []
+    next_segment = 0  # The first segment not yet consumed by an earlier hop
+    for i in range(1, len(points)):
+        start, end = points[i - 1].netzpunkt, points[i].netzpunkt
+        match = next(
+            (
+                j
+                for j in range(next_segment, len(route_segments))
+                if route_segments[j].startpunkt == start and route_segments[j].endpunkt == end
+            ),
+            None,
+        )
+        if match is None:
+            hop_segments.append(None)
+            continue
+        for skipped in route_segments[next_segment:match]:
+            logger.warning(
+                f"Route {route.lfd_nr} of line {line_name}: Strecke {skipped.id} "
+                f"({skipped.startpunkt} -> {skipped.endpunkt}) does not belong to any point of the "
+                f"Punktfolge. Ignoring it."
+            )
+        hop_segments.append(route_segments[match])
+        next_segment = match + 1
+
+    for unused in route_segments[next_segment:]:
+        logger.warning(
+            f"Route {route.lfd_nr} of line {line_name}: Strecke {unused.id} "
+            f"({unused.startpunkt} -> {unused.endpunkt}) does not belong to any point of the "
+            f"Punktfolge. Ignoring it."
+        )
+
+    return hop_segments
+
+
+def walks_between(
+    adjacency: Dict[int, List[Tuple[int, Linienfahrplan.StreckennetzDaten.Strecken.Strecke]]],
+    start: int,
+    end: int,
+    hops: int,
+) -> Tuple[List[List[Linienfahrplan.StreckennetzDaten.Strecken.Strecke]], bool]:
+    """
+    Find the walks of exactly *hops* segments leading from grid point *start* to grid point *end*.
+
+    A segment may not be used twice within a walk, but a grid point may be visited twice (circular
+    routes come back to where they started). The search stops once two walks are found — the caller
+    only needs to know whether the walk is unique — and gives up once
+    :data:`MAX_RECONSTRUCTION_SEARCH_STEPS` segments have been tried, so that a densely connected
+    network cannot stall the ingest.
+
+    :param adjacency: The segments of the schedule, by the grid point they start at
+    :param start: The grid point the walk starts at
+    :param end: The grid point the walk ends at
+    :param hops: The exact number of segments the walk must consist of
+    :return: Up to two walks, each a list of segments, and whether the search ran to completion. A
+             single walk is only the *only* walk if it did.
+    """
+    found: List[List[Linienfahrplan.StreckennetzDaten.Strecken.Strecke]] = []
+    walk: List[Linienfahrplan.StreckennetzDaten.Strecken.Strecke] = []
+    used: Set[int] = set()
+    steps = 0
+
+    def step(node: int) -> None:
+        nonlocal steps
+        if len(walk) == hops:
+            if node == end:
+                found.append(list(walk))
+            return
+        for next_node, segment in adjacency.get(node, []):
+            if segment.id in used or len(found) > 1 or steps > MAX_RECONSTRUCTION_SEARCH_STEPS:
+                continue
+            steps += 1
+            used.add(segment.id)
+            walk.append(segment)
+            step(next_node)
+            walk.pop()
+            used.remove(segment.id)
+
+    step(start)
+    return found, steps <= MAX_RECONSTRUCTION_SEARCH_STEPS
+
+
+def reconstruct_collapsed_route(
+    route: Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
+    hop_segments: List[None | Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+    segments: Dict[int, Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+    line_name: str,
+) -> Tuple[
+    Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
+    List[None | Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+]:
+    """
+    Restore the points a collapsed ``Punktfolge`` is missing, from the schedule's own Streckennetz.
+
+    Routes without a published direction (``Richtung`` 0) that are nevertheless in-service runs come
+    out of the export with their ``Punktfolge`` collapsed to the endpoints of the run — see
+    :func:`driving_times_for_points`. The stops themselves are not lost: the ``Fahrzeitprofil``
+    still has one entry per stop, and the ``Strecken`` connecting them are still in
+    ``StreckennetzDaten`` (usually referenced by no route at all). So the omitted stops are the
+    walk through that network which leads from the last point before the gap to the first point
+    after it in exactly as many segments as the Fahrzeitprofil has entries to spare.
+
+    We only accept that walk when it is the *only* one of that length, and when the driving times
+    of the Fahrzeitprofil — which the search never looks at — imply a plausible speed over every one
+    of its segments. Otherwise the route is returned unchanged and the caller falls back to
+    estimating the collapsed leg with :func:`estimated_distance_m`.
+
+    :param route: The route to reconstruct
+    :param hop_segments: The per-hop segments from :func:`segments_for_hops`
+    :param segments: All ``Strecken`` of the schedule, by their ID
+    :param line_name: The name of the line, for logging only
+    :return: The route with its points restored and the per-hop segments to go with it, or the
+             unchanged arguments if the route is not collapsed or could not be reconstructed
+    """
+    logger = logging.getLogger(__name__)
+
+    points = route.punktfolge.punkt
+    profile_lengths = {len(fp.fahrzeitprofilpunkte.punkt) for fp in route.fahrzeitprofile.fahrzeitprofil}
+    if len(profile_lengths) != 1:
+        return route, hop_segments  # Contradictory profiles: we cannot tell how many stops are missing
+    missing = profile_lengths.pop() - len(points)
+    if missing <= 0 or len(points) < 2:
+        return route, hop_segments  # Not collapsed, or collapsed so far that there is no leg left
+
+    # The gap sits in the hop that has no Strecke; if all of them have one it sits in the last hop,
+    # which is where a circular route's collapsed loop went (its endpoints are its own start point).
+    gap = next((hop for hop, segment in enumerate(hop_segments) if segment is None), len(hop_segments) - 1)
+    adjacency: Dict[int, List[Tuple[int, Linienfahrplan.StreckennetzDaten.Strecken.Strecke]]] = {}
+    for segment in segments.values():
+        adjacency.setdefault(segment.startpunkt, []).append((segment.endpunkt, segment))
+    walks, exhaustive = walks_between(adjacency, points[gap].netzpunkt, points[gap + 1].netzpunkt, missing + 1)
+    if len(walks) != 1 or not exhaustive:
+        if not exhaustive:
+            outcome = "the search for one was given up on"
+        else:
+            outcome = f"the Streckennetz has {'none' if not walks else 'more than one'}"
+        logger.warning(
+            f"Route {route.lfd_nr} of line {line_name} omits {missing} points of its Punktfolge, so "
+            f"they would have to be a connection of {missing + 1} Strecken between points "
+            f"{points[gap].netzpunkt} and {points[gap + 1].netzpunkt}, but {outcome}. "
+            f"Not reconstructing them."
+        )
+        return route, hop_segments
+    walk = walks[0]
+
+    restored_hop_segments = hop_segments[:gap] + list(walk) + hop_segments[gap + 1 :]
+    for fahrzeitprofil in route.fahrzeitprofile.fahrzeitprofil:
+        # The driving times now line up one-to-one with the segments of the walk. They are an
+        # independent measure of each segment's length, so an implausible speed means we spliced in
+        # the wrong part of the network.
+        driving_times = fahrzeitprofil.fahrzeitprofilpunkte.punkt[gap + 1 : gap + 1 + len(walk)]
+        for spliced, profile_point in zip(walk, driving_times):
+            if profile_point.streckenfahrzeit <= 0:
+                continue  # The export rounds driving times to whole minutes, so short hops get zero
+            speed_kmh = 3.6 * spliced.streckenlaenge / profile_point.streckenfahrzeit
+            if speed_kmh > MAX_RECONSTRUCTION_SPEED_KMH:
+                logger.warning(
+                    f"Route {route.lfd_nr} of line {line_name}: the connection reconstructed for the "
+                    f"{missing} omitted points of its Punktfolge would have to be driven at "
+                    f"{speed_kmh:.0f} km/h on Strecke {spliced.id}. Not reconstructing them."
+                )
+                return route, hop_segments
+
+    restored_points = (
+        points[: gap + 1]
+        + [
+            Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Punktfolge.Punkt(
+                lfd_nr=0,  # Renumbered below, together with the points we keep
+                netzpunkt=segment.endpunkt,
+                fahrgastwechsel=points[gap].fahrgastwechsel,
+                veroeffentlicht=points[gap].veroeffentlicht,
+            )
+            for segment in walk[:-1]
+        ]
+        + points[gap + 1 :]
+    )
+    restored_route = replace(
+        route,
+        punktfolge=Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Punktfolge(
+            punkt=[replace(punkt, lfd_nr=lfd_nr) for lfd_nr, punkt in enumerate(restored_points, start=1)]
+        ),
+        streckenfolge=Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Streckenfolge(
+            strecke=[
+                Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route.Streckenfolge.Strecke(
+                    lfd_nr=lfd_nr, strecken_id=segment.id
+                )
+                for lfd_nr, segment in enumerate(restored_hop_segments, start=1)
+                if segment is not None
+            ]
+        ),
+    )
+    replaced_hop = hop_segments[gap]
+    logger.info(
+        f"Route {route.lfd_nr} of line {line_name} omits {missing} points of its Punktfolge. "
+        f"Restored them from the Streckennetz, replacing the "
+        f"{replaced_hop.streckenlaenge if replaced_hop is not None else 0} m leg from "
+        f"{points[gap].netzpunkt} to {points[gap + 1].netzpunkt} with "
+        f"{len(walk)} Strecken totalling {sum(s.streckenlaenge for s in walk)} m."
+    )
+    return restored_route, restored_hop_segments
+
+
+def driving_times_for_points(
+    route: Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
+    hop_segments: List[None | Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+    line_name: str,
+) -> Dict[int, List[Tuple[timedelta, timedelta]]]:
+    """
+    Map each ``Fahrzeitprofil`` of a route onto the points of its ``Punktfolge``.
+
+    Normally the two are the same length and correspond one-to-one. Some routes, however, have a
+    ``Punktfolge`` that the export has collapsed to the endpoints of the run (typically
+    ``BPunkt -> Hst -> Hst -> BPunkt``) while the ``Fahrzeitprofil`` still describes every stop of
+    the underlying journey. Indexing the profile by point position then silently truncates it — a
+    13 minute run turned into a 2 minute one, because only the first few driving times were read.
+    The surplus entries all belong to the one hop that got collapsed, so we sum them into it. That
+    hop is the one without a ``Strecke`` (the export has no length for it either); if every hop has
+    one, the collapse happened inside the last hop, which is where the remaining points went.
+
+    :param route: The route whose Fahrzeitprofile are to be mapped
+    :param hop_segments: The per-hop segments from :func:`segments_for_hops`
+    :param line_name: The name of the line, for logging only
+    :return: For each ``FahrzeitprofilNummer``, one ``(driving time, waiting time)`` tuple per point
+             of the ``Punktfolge``
+    """
+    logger = logging.getLogger(__name__)
+
+    points = route.punktfolge.punkt
+    # The point the collapsed stops are folded into, i.e. the end of the first hop that has no
+    # Strecke, or else the last point.
+    collapsed_into = next((hop + 1 for hop, segment in enumerate(hop_segments) if segment is None), len(points) - 1)
+
+    driving_times: Dict[int, List[Tuple[timedelta, timedelta]]] = {}
+    for fahrzeitprofil in route.fahrzeitprofile.fahrzeitprofil:
+        profile_points = fahrzeitprofil.fahrzeitprofilpunkte.punkt
+        surplus = len(profile_points) - len(points)
+        if surplus < 0:
+            raise ValueError(
+                f"Route lfd_nr={route.lfd_nr} of line {line_name!r}, fahrzeitprofil "
+                f"{fahrzeitprofil.fahrzeitprofil_nummer}: the Fahrzeitprofil has "
+                f"{len(profile_points)} points, fewer than the {len(points)} points of the "
+                f"Punktfolge."
+            )
+        if surplus > 0:
+            logger.warning(
+                f"Route {route.lfd_nr} of line {line_name} has {len(points)} points in its "
+                f"Punktfolge, but {len(profile_points)} in Fahrzeitprofil "
+                f"{fahrzeitprofil.fahrzeitprofil_nummer}. Adding the driving times of the "
+                f"{surplus} stops the Punktfolge omits to the leg ending at point {collapsed_into + 1}."
+            )
+
+        times: List[Tuple[timedelta, timedelta]] = []
+        for i in range(len(points)):
+            if i < collapsed_into:
+                profile_point_range = profile_points[i : i + 1]
+            elif i == collapsed_into:
+                profile_point_range = profile_points[i : i + surplus + 1]
+            else:
+                profile_point_range = profile_points[i + surplus : i + surplus + 1]
+            # The waiting times of the omitted stops are elapsed time as well, so they go into the
+            # driving time of the collapsed leg. Only the last point of the range is an actual point
+            # of the Punktfolge, so only its waiting time stays a waiting time.
+            driving = sum(p.streckenfahrzeit for p in profile_point_range) + sum(
+                p.wartezeit for p in profile_point_range[:-1]
+            )
+            times.append((timedelta(seconds=driving), timedelta(seconds=profile_point_range[-1].wartezeit)))
+        driving_times[fahrzeitprofil.fahrzeitprofil_nummer] = times
+
+    return driving_times
+
+
 @dataclass
 class TimeProfile:
     @dataclass
@@ -657,6 +981,12 @@ def create_routes_and_time_profiles(
             time_profile_points[fahrzeitprofil.fahrzeitprofil_nummer] = []
             elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] = timedelta(seconds=0)
 
+        # Neither the Streckenfolge nor the Fahrzeitprofile can be indexed by point position, see
+        # the three functions for the export quirks that break that assumption
+        hop_segments = segments_for_hops(route, segments, db_line.name)
+        route, hop_segments = reconstruct_collapsed_route(route, hop_segments, segments, db_line.name)
+        driving_times_by_profile = driving_times_for_points(route, hop_segments, db_line.name)
+
         for i in range(len(route.punktfolge.punkt)):
             point = route.punktfolge.punkt[i]
             # Load data to be used later
@@ -667,38 +997,39 @@ def create_routes_and_time_profiles(
             geom = soldner_to_pointz(grid_point.xkoordinate, grid_point.ykoordinate)
 
             # Temporal: Update driving times
-            driving_times: Dict[int, Tuple[timedelta, timedelta]] = {}  # Order: driving, waiting
-            for fahrzeitprofil in route.fahrzeitprofile.fahrzeitprofil:
-                driving_time_point = fahrzeitprofil.fahrzeitprofilpunkte.punkt[i]
-                driving_times[fahrzeitprofil.fahrzeitprofil_nummer] = (
-                    timedelta(seconds=driving_time_point.streckenfahrzeit),
-                    timedelta(seconds=driving_time_point.wartezeit),
-                )
-                elapsed_time[fahrzeitprofil.fahrzeitprofil_nummer] += timedelta(
-                    seconds=driving_time_point.streckenfahrzeit
-                )
+            driving_times: Dict[int, Tuple[timedelta, timedelta]] = {  # Order: driving, waiting
+                fahrzeitprofil_nummer: times[i] for fahrzeitprofil_nummer, times in driving_times_by_profile.items()
+            }
+            for fahrzeitprofil_nummer, (driving_time, _) in driving_times.items():
+                elapsed_time[fahrzeitprofil_nummer] += driving_time
 
             # Geographic: Update elapsed distance
             if i > 0:
-                segment_id = route.streckenfolge.strecke[i - 1].strecken_id
-                segment = segments[segment_id]
-                elapsed_distance += segment.streckenlaenge
+                segment = hop_segments[i - 1]
+                if segment is not None:
+                    elapsed_distance += segment.streckenlaenge
+                else:
+                    # The export carries no Strecke -- and therefore no Streckenlänge -- for this
+                    # leg, so estimate it the same way as a zero-distance route below.
+                    previous_grid_point = grid_points[route.punktfolge.punkt[i - 1].netzpunkt]
+                    estimated_leg_distance = estimated_distance_m(previous_grid_point, grid_point)
+                    elapsed_distance += estimated_leg_distance
+                    distance_is_estimated = True
+                    logger.warning(
+                        f"Route {route.lfd_nr} of line {db_line.name} has no Strecke for the leg from "
+                        f"{previous_grid_point.kurzname} to {grid_point.kurzname}. "
+                        f"Estimating {estimated_leg_distance:.0f} m from the crow-fly distance."
+                    )
 
             # SPECIAL FIXES
             # Some routes have a distance of zero even once the last point is reached, because the export
             # carries no Streckenlänge for the depot connection anywhere. Estimate the distance as
             # crow-fly × detour factor from the grid-point coordinates (Soldner, in millimeters).
             if i == len(route.punktfolge.punkt) - 1 and elapsed_distance == 0:
-                first_gp = grid_points[route.punktfolge.punkt[0].netzpunkt]
-                last_gp = grid_points[route.punktfolge.punkt[-1].netzpunkt]
-                crow_fly_m = (
-                    math.hypot(
-                        first_gp.xkoordinate - last_gp.xkoordinate,
-                        first_gp.ykoordinate - last_gp.ykoordinate,
-                    )
-                    / 1000.0
+                elapsed_distance = estimated_distance_m(
+                    grid_points[route.punktfolge.punkt[0].netzpunkt],
+                    grid_points[route.punktfolge.punkt[-1].netzpunkt],
                 )
-                elapsed_distance = max(CROW_FLY_DETOUR_FACTOR * crow_fly_m, MIN_ESTIMATED_DISTANCE_M)
                 distance_is_estimated = True
                 logger.warning(
                     f"Route {route.lfd_nr} of line {db_line.name} has a zero distance at the end. "
@@ -813,8 +1144,6 @@ def create_routes_and_time_profiles(
             station,
             grid_point,
             geom,
-            driving_time_point,
-            segment_id,
             segment,
             waiting_time,
             assoc,
@@ -1473,6 +1802,23 @@ CROW_FLY_DETOUR_FACTOR: float = 1.4
 # Floor for the estimated distance, used when even the crow-fly distance is
 # zero (departure and arrival grid points are co-located).
 MIN_ESTIMATED_DISTANCE_M: float = 1000.0
+
+
+# Guard rails for reconstruct_collapsed_route, which restores the points a
+# collapsed Punktfolge omits by searching the schedule's Streckennetz for the
+# connection between the points around the gap.
+#
+# The reconstruction is only accepted if the driving times of the Fahrzeitprofil
+# — which the search itself ignores — imply no more than this speed over any of
+# the segments it spliced in. Genuine routes in the Berlin 2026-07 export peak
+# at ~79 km/h on a few long express-bus hops, so this catches a connection that
+# is grossly too long for the time available without rejecting real ones.
+MAX_RECONSTRUCTION_SPEED_KMH: float = 100.0
+
+# Ceiling on the number of segments the search tries before giving up, so that a
+# densely connected network cannot stall the ingest. Reconstructing the Berlin
+# 2026-07 export needs at most a few thousand.
+MAX_RECONSTRUCTION_SEARCH_STEPS: int = 1_000_000
 
 
 # Station-merge overrides for sibling stations whose short names don't share a

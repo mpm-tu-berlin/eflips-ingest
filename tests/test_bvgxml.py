@@ -1,6 +1,7 @@
 import glob
 import math
 import os
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import List, Dict
@@ -16,6 +17,9 @@ from eflips.ingest.bvgxml import BvgxmlIngester
 from eflips.ingest.bvgxml._pipeline import (
     CROW_FLY_DETOUR_FACTOR,
     MIN_ESTIMATED_DISTANCE_M,
+    estimated_distance_m,
+    reconstruct_collapsed_route,
+    segments_for_hops,
     load_and_validate_xml,
     create_stations,
     setup_working_dictionaries,
@@ -184,7 +188,9 @@ class TestBVGXML:
                 assert db_route.distance == pytest.approx(expected_distances[lfd_nr])
                 assert db_route.name.startswith("CHECK DISTANCE: ")
 
-                expected_duration = timedelta(seconds=expected_distances[lfd_nr] / SPEED)
+                # The pipeline rounds the estimated duration up to whole seconds, see the comment
+                # on the fallback in create_routes_and_time_profiles
+                expected_duration = timedelta(seconds=max(1, math.ceil(expected_distances[lfd_nr] / SPEED)))
                 assert expected_duration < timedelta(hours=2)
                 for points in trip_time_profiles[lfd_nr].values():
                     if lfd_nr == 1:
@@ -195,6 +201,138 @@ class TestBVGXML:
                         # Aussetzfahrt: the end is extended by the estimated duration
                         offset = points[-1].arrival_offset_from_start
                         assert offset.total_seconds() == pytest.approx(expected_duration.total_seconds())
+
+    @staticmethod
+    def _collapse_route(
+        route: Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route,
+        strecken: Dict[int, Linienfahrplan.StreckennetzDaten.Strecken.Strecke],
+    ) -> Linienfahrplan.LinienDaten.Linie.RoutenDaten.Route:
+        """
+        Reproduce the export quirk this module has to cope with: a route whose Punktfolge has been
+        collapsed to the endpoints of the run (its first and last two points) and whose
+        Streckenfolge only carries the Strecken between those, while the Fahrzeitprofile still list
+        every stop of the underlying journey.
+        """
+        points = route.punktfolge.punkt[:2] + route.punktfolge.punkt[-2:]
+        kept_hops = {
+            (points[0].netzpunkt, points[1].netzpunkt),
+            (points[2].netzpunkt, points[3].netzpunkt),
+        }
+        return replace(
+            route,
+            punktfolge=replace(route.punktfolge, punkt=points),
+            streckenfolge=replace(
+                route.streckenfolge,
+                strecke=[
+                    s
+                    for s in route.streckenfolge.strecke
+                    if (strecken[s.strecken_id].startpunkt, strecken[s.strecken_id].endpunkt) in kept_hops
+                ],
+            ),
+        )
+
+    def test_collapsed_punktfolge_is_reconstructed(self, linienfahrplan):
+        """
+        Regression test: some routes come out of the export with their Punktfolge collapsed to the
+        endpoints of the run, without a Strecke for the collapsed leg, while the Fahrzeitprofil
+        still lists every stop of the underlying journey. Indexing the Streckenfolge by point
+        position raised an ``IndexError``. The omitted points must instead be restored from the
+        Streckennetz — exactly, for every in-service route of the sample.
+        """
+        strecken = {s.id: s for s in linienfahrplan.streckennetz_daten.strecken.strecke}
+        reconstructed_routes = 0
+        for route in linienfahrplan.linien_daten.linie.routen_daten.route:
+            if len(route.punktfolge.punkt) <= 4:
+                continue  # A depot leg, nothing to collapse
+            collapsed = self._collapse_route(route, strecken)
+            assert len(collapsed.streckenfolge.strecke) == 2
+
+            restored, hop_segments = reconstruct_collapsed_route(
+                collapsed, segments_for_hops(collapsed, strecken, "125"), strecken, "125"
+            )
+            assert [p.netzpunkt for p in restored.punktfolge.punkt] == [p.netzpunkt for p in route.punktfolge.punkt]
+            assert [s.strecken_id for s in restored.streckenfolge.strecke] == [
+                s.strecken_id for s in route.streckenfolge.strecke
+            ]
+            assert [s.id for s in hop_segments if s is not None] == [s.strecken_id for s in route.streckenfolge.strecke]
+            reconstructed_routes += 1
+        assert reconstructed_routes > 0
+
+    def test_collapsed_punktfolge_is_not_reconstructed_from_an_unfinished_search(self, linienfahrplan, monkeypatch):
+        """
+        A walk that a truncated search happens to be the only one to find is not known to be the
+        only one there is, so it must not be spliced in.
+        """
+        monkeypatch.setattr("eflips.ingest.bvgxml._pipeline.MAX_RECONSTRUCTION_SEARCH_STEPS", 10)
+
+        strecken = {s.id: s for s in linienfahrplan.streckennetz_daten.strecken.strecke}
+        route = next(r for r in linienfahrplan.linien_daten.linie.routen_daten.route if len(r.punktfolge.punkt) > 4)
+        collapsed = self._collapse_route(route, strecken)
+
+        restored, hop_segments = reconstruct_collapsed_route(
+            collapsed, segments_for_hops(collapsed, strecken, "125"), strecken, "125"
+        )
+        assert restored is collapsed
+        assert len(restored.punktfolge.punkt) == 4
+
+    def test_collapsed_punktfolge_route_is_estimated_without_streckennetz(self, xml_path):
+        """
+        Regression test: when the Streckennetz does not connect the endpoints of a collapsed leg, it
+        cannot be reconstructed and its distance is estimated instead. Indexing the Fahrzeitprofil by
+        point position used to silently truncate such a route to the driving times of its first few
+        stops, so its duration must still be the one of the uncollapsed route.
+        """
+        engine = create_engine(os.environ["DATABASE_URL"])
+        eflips.model.Base.metadata.drop_all(engine)
+        eflips.model.setup_database(engine)
+
+        pristine = load_and_validate_xml(xml_path)
+        collapsed = load_and_validate_xml(xml_path)
+
+        strecken = {s.id: s for s in collapsed.streckennetz_daten.strecken.strecke}
+        grid_points = {gp.nummer: gp for gp in collapsed.streckennetz_daten.netzpunkte.netzpunkt}
+        routes = collapsed.linien_daten.linie.routen_daten.route
+        index, route = next((i, r) for i, r in enumerate(routes) if len(r.punktfolge.punkt) > 4)
+        routes[index] = self._collapse_route(route, strecken)
+        lfd_nr = route.lfd_nr
+
+        # Take the network of the collapsed leg away, leaving only the Strecken the route still
+        # references, so that the omitted points cannot be restored.
+        kept = {s.strecken_id for r in routes for s in r.streckenfolge.strecke}
+        collapsed.streckennetz_daten.strecken.strecke = [s for s in strecken.values() if s.id in kept]
+
+        skeleton = routes[index].punktfolge.punkt
+        expected_distance = (
+            strecken[routes[index].streckenfolge.strecke[0].strecken_id].streckenlaenge
+            + estimated_distance_m(grid_points[skeleton[1].netzpunkt], grid_points[skeleton[2].netzpunkt])
+            + strecken[routes[index].streckenfolge.strecke[1].strecken_id].streckenlaenge
+        )
+
+        with Session(engine) as session:
+            durations: Dict[str, Dict[int, timedelta]] = {}
+            for name, schedule in (("pristine", pristine), ("collapsed", collapsed)):
+                scenario = eflips.model.Scenario(name=name)
+                session.add(scenario)
+                session.flush()
+
+                station_mapping: dict[int, eflips.model.Station] = {}
+                create_stations(schedule, scenario.id, session, station_mapping)
+                trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
+                    schedule, scenario.id, session, station_mapping
+                )
+                durations[name] = {
+                    nummer: points[-1].arrival_offset_from_start
+                    for nummer, points in trip_time_profiles[lfd_nr].items()
+                }
+                if name == "collapsed":
+                    db_route = db_routes_by_lfd_nr[lfd_nr]
+
+            assert db_route is not None
+            assert db_route.distance == pytest.approx(expected_distance)
+            assert db_route.name.startswith("CHECK DISTANCE: ")
+
+            # Collapsing the Punktfolge must not shorten the trip
+            assert durations["collapsed"] == durations["pristine"]
 
     def test_create_trip_prototypes(self, linienfahrplan):
         engine = create_engine(os.environ["DATABASE_URL"])
