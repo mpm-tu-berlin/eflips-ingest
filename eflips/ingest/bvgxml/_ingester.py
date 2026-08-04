@@ -1,3 +1,4 @@
+import gc
 import logging
 import pickle
 import shutil
@@ -6,7 +7,7 @@ import warnings
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, Tuple
 from uuid import UUID, uuid4
 from zipfile import BadZipFile, ZipFile
 
@@ -15,36 +16,38 @@ from eflips.model import ConsistencyWarning, create_engine
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
-from eflips.ingest.bvgxml._pipeline import (
-    RotationRegistry,
-    TimeProfile,
-    create_routes_and_time_profiles,
-    create_stations,
-    create_trip_prototypes,
-    create_trips_and_vehicle_schedules,
-    delete_incomplete_rotations,
-    fix_max_sequence,
-    identify_and_delete_overlapping_rotations,
-    load_and_validate_xml,
-    merge_identical_stations,
-    recenter_station,
-)
-from eflips.ingest.bvgxml._xmldata import Linienfahrplan
+from eflips.ingest.bvgxml._emit import emit, fix_max_sequence
+from eflips.ingest.bvgxml._network import build_network
+from eflips.ingest.bvgxml._read import PreparedInput, merge_corpus, read_files
+from eflips.ingest.bvgxml._routes import resolve_routes
+from eflips.ingest.bvgxml._schedule import build_schedule
+from eflips.ingest.bvgxml._workings import build_workings
 
 
 class BvgxmlIngester(AbstractIngester):
     """
-    Ingester for BVG-XML Linienfahrplan files.
+    Ingester for BVG-XML ``Linienfahrplan`` files.
 
-    ``prepare()`` extracts a user-supplied zip, parses every contained ``*.xml`` file into a
-    :class:`Linienfahrplan` and validates it against the bundled ``bvg_xml.xsd`` schema. The parsed
-    schedules are pickled under :meth:`path_for_uuid` for later use.
+    The pipeline is three phases with a database-free model in the middle::
 
-    ``ingest()`` re-uses the helpers in :mod:`eflips.ingest.bvgxml._pipeline` to write stations,
-    routes, trips and rotations into the database — reassembling each vehicle working from its
-    per-line file slices via a shared :class:`RotationRegistry` — then runs the post-processing
-    fix-ups (geometry recentring, identical-station merging, incomplete-rotation deletion,
-    overlapping-rotation deletion, sequence reset).
+        read ──▶ RawCorpus ──▶ Network ──▶ RouteTable ──▶ Schedule ──▶ rows
+                  merged        stations    routes and     rotations
+                  input         and depots  timings        and trips
+
+    :meth:`prepare` extracts a user-supplied zip, parses and validates every contained
+    ``*.xml``, and merges them into a corpus so that contradictions between files are
+    reported before anything is written. :meth:`ingest` resolves that corpus and writes it
+    in a single insert-only pass.
+
+    A real export dump is not a clean set of documents, so :meth:`prepare` skips two kinds
+    of file rather than rejecting the zip: the export's "no data" answer for a line that is
+    not in service on the day, and files that are corrupt. Both are counted in the ingest
+    report, and only a zip with nothing usable left in it is an error.
+
+    The merge is what makes the resolution total. The export slices the network by
+    ``(Linie, Stichtag)``, so no single file is a complete picture: about 8 % of a file's
+    ``BPunkt`` grid points have no ``Hst`` twin in that same file, ``Strecke/ID`` is
+    file-local, and a vehicle working is spread across one file per line it touches.
     """
 
     def prepare(  # type: ignore[override]
@@ -73,27 +76,58 @@ class BvgxmlIngester(AbstractIngester):
 
         xml_paths = sorted(xml_dir.rglob("*.xml"))
         if not xml_paths:
+            # A dump often arrives as a zip of a zip. Unpacking it here would mean silently
+            # extracting whatever a user handed us, so say what is wrong instead and let
+            # them do it: the message is the whole difference between a two-second fix and
+            # an unexplained rejection.
+            inner_zips = sorted(path.name for path in xml_dir.rglob("*.zip"))
             shutil.rmtree(target_dir)
+            if inner_zips:
+                return False, {
+                    "xml_zip_file": (
+                        f"The zip contains no .xml files, but it does contain "
+                        f"{len(inner_zips)} zip file(s) of its own ({', '.join(inner_zips[:5])}). "
+                        f"Unpack the inner archive and supply a zip whose .xml files are "
+                        f"directly inside it."
+                    )
+                }
             return False, {"xml_zip_file": "Zip contains no .xml files."}
 
-        schedules: List[Linienfahrplan] = []
-        errors: Dict[str, str] = {}
-        # Reserve the last 5% for the pickle write so the bar doesn't claim 100%
-        # before the file actually exists on disk.
-        for i, path in enumerate(xml_paths):
-            try:
-                schedules.append(load_and_validate_xml(path))
-            except Exception as e:  # noqa: BLE001 — xsdata/lxml can raise various types
-                errors[path.name] = str(e)
-            if progress_callback:
-                progress_callback(0.95 * (i + 1) / len(xml_paths))
+        # Reserve the last 10 % for the merge and the pickle write, so the bar does not
+        # claim 100 % before the file exists on disk.
+        prepared = read_files(
+            xml_paths,
+            progress_callback=(lambda f: progress_callback(0.9 * f)) if progress_callback else None,
+        )
 
-        if errors:
+        if not prepared.files:
             shutil.rmtree(target_dir)
-            return False, errors
+            if prepared.skipped_invalid:
+                return False, prepared.skipped_invalid
+            return False, {
+                "xml_zip_file": (
+                    f"None of the {len(xml_paths)} .xml files in the zip carry any data: every "
+                    f"one of them is the export's answer that it has no timetable for that "
+                    f"line and day."
+                )
+            }
+
+        # Merge now rather than in ingest(): this is where files that contradict each other
+        # are caught, and a user would rather learn that from prepare() than half-way
+        # through a write.
+        try:
+            merge_corpus(prepared.files)
+        except ValueError as e:
+            shutil.rmtree(target_dir)
+            return False, {"xml_zip_file": str(e)}
 
         with open(target_dir / "schedules.pkl", "wb") as fp:
-            pickle.dump(schedules, fp, protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(prepared, fp, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # The parsed documents are in the pickle now and ingest() never opens the XML again,
+        # so the extracted copy is dead weight — 862 MB of it for a full-city import, left
+        # in the temporary directory for as long as the UUID lives.
+        shutil.rmtree(xml_dir, ignore_errors=True)
 
         if progress_callback:
             progress_callback(1.0)
@@ -106,22 +140,31 @@ class BvgxmlIngester(AbstractIngester):
         if not pkl_path.is_file():
             raise ValueError(f"No prepared data found at {pkl_path}; was prepare() called for this UUID?")
         with open(pkl_path, "rb") as fp:
-            schedules: List[Linienfahrplan] = pickle.load(fp)
+            prepared: PreparedInput = pickle.load(fp)
 
-        # Progress is reported as a value in [0, 1]. Each phase below claims a
-        # fixed share of the bar; loops within a phase interpolate inside it so
-        # the bar moves smoothly on long stacks.
-        TOTAL_PHASES = 10
-
-        def report(phase: float) -> None:
+        def report(fraction: float) -> None:
             if progress_callback:
-                progress_callback(min(1.0, phase / TOTAL_PHASES))
+                progress_callback(min(1.0, max(0.0, fraction)))
 
-        def report_subphase(phase_start: int, i: int, n: int) -> None:
-            # phase_start is the integer phase number this loop completes.
-            # i is 0-indexed within the loop, n is total iterations.
-            if progress_callback and n > 0:
-                progress_callback(min(1.0, (phase_start - 1 + (i + 1) / n) / TOTAL_PHASES))
+        # Resolution is pure and touches no database, so all of it happens before the
+        # session is opened.
+        corpus = merge_corpus(prepared.files)
+        report(0.15)
+        network = build_network(corpus)
+        report(0.25)
+        route_table = resolve_routes(corpus, network)
+        report(0.55)
+        working_table = build_workings(corpus)
+        report(0.6)
+        schedule = build_schedule(corpus, network, route_table, working_table)
+        schedule.report.absorb_prepared_input(prepared)
+        report(0.65)
+
+        # The Schedule holds no reference back to the parsed XML, so let the whole corpus
+        # go before the write starts. On a full-city import that is 1400-odd parsed
+        # documents' worth of memory, and the write is the part that needs the headroom.
+        del corpus, route_table, working_table, prepared
+        gc.collect()
 
         engine = create_engine(self.database_url)
         with Session(engine) as session:
@@ -136,92 +179,22 @@ class BvgxmlIngester(AbstractIngester):
                 )
                 session.add(scenario)
                 session.flush()
-            scenario_id = scenario.id
-            report(1)
 
-            n_schedules = len(schedules)
-            station_mapping: Dict[int, eflips.model.Station] = {}
-            for i, schedule in enumerate(schedules):
-                create_stations(schedule, scenario_id, session, station_mapping)
-                report_subphase(2, i, n_schedules)
-
-            create_route_results: List[
-                Tuple[
-                    Linienfahrplan,
-                    Dict[int, Dict[int, List[TimeProfile.TimeProfilePoint]]],
-                    Dict[int, None | eflips.model.Route],
-                ]
-            ] = []
-            for i, schedule in enumerate(schedules):
-                trip_time_profiles, db_routes_by_lfd_nr = create_routes_and_time_profiles(
-                    schedule, scenario_id, session, station_mapping
+            with warnings.catch_warnings():
+                # The model warns while a rotation is half-built; it is consistent by the
+                # time the session is committed.
+                warnings.simplefilter("ignore", category=ConsistencyWarning)
+                emit(
+                    schedule,
+                    scenario.id,
+                    session,
+                    progress_callback=lambda f: report(0.65 + 0.3 * f),
                 )
-                create_route_results.append((schedule, trip_time_profiles, db_routes_by_lfd_nr))
-                report_subphase(3, i, n_schedules)
-
-            all_trip_prototypes: List[Dict[int, None | TimeProfile]] = []
-            for i, (schedule, trip_time_profiles, db_routes_by_lfd_nr) in enumerate(create_route_results):
-                all_trip_prototypes.append(create_trip_prototypes(schedule, trip_time_profiles, db_routes_by_lfd_nr))
-                report_subphase(4, i, n_schedules)
-
-            trip_prototypes: Dict[int, None | TimeProfile] = {}
-            for the_dict in all_trip_prototypes:
-                for fahrt_id, time_profile in the_dict.items():
-                    if fahrt_id in trip_prototypes:
-                        if trip_prototypes[fahrt_id] != time_profile:
-                            existing_tp = trip_prototypes[fahrt_id]
-                            raise ValueError(
-                                f"Trip fahrt_id={fahrt_id} has differing time profiles between two input "
-                                f"XML files. Existing route="
-                                f"{existing_tp.route.name if existing_tp else None!r}, new route="
-                                f"{time_profile.route.name if time_profile else None!r}. Each fahrt_id should "
-                                f"appear in at most one Linie's XML; rebuild the input zip with a consistent slice."
-                            )
-                    else:
-                        trip_prototypes[fahrt_id] = time_profile
-
-            # One registry for the whole import: it reassembles each physical vehicle working
-            # (which the export slices across one file per line it touches) into one rotation.
-            rotation_registry = RotationRegistry()
-            for i, schedule in enumerate(schedules):
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=ConsistencyWarning)
-                    create_trips_and_vehicle_schedules(
-                        schedule, trip_prototypes, scenario_id, session, rotation_registry
-                    )
-                report_subphase(5, i, n_schedules)
-
-            stations_without_geom_q = (
-                session.query(eflips.model.Station)
-                .join(eflips.model.AssocRouteStation)
-                .filter(eflips.model.Station.scenario_id == scenario_id)
-                .distinct(eflips.model.Station.id)
-            )
-            for station in stations_without_geom_q:
-                recenter_station(station, session)
-            session.flush()
-            session.expire_all()
-            report(6)
-
-            # Phase 7 used to rewrite sentinel-marked zero-distance routes here; the
-            # pipeline now estimates those distances directly, so the phase is a no-op
-            # kept only to preserve the progress-bar numbering.
-            report(7)
-
-            merge_identical_stations(scenario_id, session)
-            session.flush()
-            session.expire_all()
-            report(8)
-
-            delete_incomplete_rotations(scenario_id, session)
-            report(9)
-
-            identify_and_delete_overlapping_rotations(scenario_id, session)
             session.commit()
 
         fix_max_sequence(self.database_url)
-        report(10)
-        logger.info("BVG-XML ingestion for UUID %s complete.", uuid)
+        report(1.0)
+        logger.info("%s", schedule.report.summary())
 
     @classmethod
     def prepare_param_names(cls) -> Dict[str, str | Dict[Enum, str]]:
@@ -232,6 +205,11 @@ class BvgxmlIngester(AbstractIngester):
         return {
             "xml_zip_file": (
                 "A .zip archive containing one or more BVG-XML Linienfahrplan files (*.xml). "
-                "Each file is validated against the bundled bvg_xml.xsd schema during prepare()."
+                "Each file is validated against the bundled bvg_xml.xsd schema during prepare(), "
+                "and the files are then merged and checked against each other. Files the export "
+                "answered with 'no data' for, and files that are corrupt, are skipped and "
+                "counted rather than rejecting the whole archive. Include every line the "
+                "exported vehicle workings touch: a working whose other lines are missing "
+                "cannot be imported, and the ingest log will say which lines those are."
             ),
         }
