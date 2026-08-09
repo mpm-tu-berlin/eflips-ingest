@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Dict, Iterable, List
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters for type checking
     from eflips.ingest.bvgxml._read import PreparedInput
+    from eflips.ingest.bvgxml._rotations import RawRotation
     from eflips.ingest.bvgxml._routes import ResolvedRoute, RouteTable
     from eflips.ingest.bvgxml._schedule import Trip
-    from eflips.ingest.bvgxml._workings import Working
 
 
 @dataclass
@@ -41,10 +41,10 @@ class IngestReport:
     # What was dropped
     n_degenerate_routes: int = 0
     n_trips_on_degenerate_routes: int = 0
-    n_truncated_workings: int = 0
-    n_empty_workings: int = 0
+    n_truncated_rotations: int = 0
+    n_empty_rotations: int = 0
     n_unresolvable_routes: int = 0
-    n_workings_on_unresolvable_routes: int = 0
+    n_rotations_on_unresolvable_routes: int = 0
     truncation_reasons: Dict[str, int] = field(default_factory=dict)
     truncated_examples: List[str] = field(default_factory=list)
 
@@ -83,33 +83,33 @@ class IngestReport:
         self.n_files_empty = len(prepared.skipped_empty)
         self.files_invalid = dict(prepared.skipped_invalid)
 
-    def note_truncated_working(self, working: "Working", reason: str) -> None:
-        self.n_truncated_workings += 1
+    def note_truncated_rotation(self, rotation: "RawRotation", reason: str) -> None:
+        self.n_truncated_rotations += 1
         self.truncation_reasons[reason] = self.truncation_reasons.get(reason, 0) + 1
         if len(self.truncated_examples) < self.example_limit:
-            self.truncated_examples.append(f"{working.name} ({reason})")
+            self.truncated_examples.append(f"{rotation.name} ({reason})")
 
-    def note_empty_working(self) -> None:
-        self.n_empty_workings += 1
+    def note_empty_rotation(self) -> None:
+        self.n_empty_rotations += 1
 
-    def note_working_on_unresolvable_route(self, working: "Working", reason: str) -> None:
-        self.n_workings_on_unresolvable_routes += 1
+    def note_rotation_on_unresolvable_route(self, rotation: "RawRotation", reason: str) -> None:
+        self.n_rotations_on_unresolvable_routes += 1
         if len(self.truncated_examples) < self.example_limit:
-            self.truncated_examples.append(f"{working.name} ({reason})")
+            self.truncated_examples.append(f"{rotation.name} ({reason})")
 
-    def note_discontinuity(self, working: "Working", current: "Trip", following: "Trip") -> None:
+    def note_discontinuity(self, rotation: "RawRotation", current: "Trip", following: "Trip") -> None:
         self.n_discontinuities += 1
         if len(self.discontinuities) < self.example_limit:
             self.discontinuities.append(
-                f"{working.name}: trip {current.fahrt_id} ends at a different station than "
+                f"{rotation.name}: trip {current.fahrt_id} ends at a different station than "
                 f"trip {following.fahrt_id} starts at"
             )
 
-    def note_overlap(self, working: "Working", current: "Trip", following: "Trip") -> None:
+    def note_overlap(self, rotation: "RawRotation", current: "Trip", following: "Trip") -> None:
         self.n_overlaps += 1
         if len(self.overlaps) < self.example_limit:
             self.overlaps.append(
-                f"{working.name}: trip {current.fahrt_id} arrives at "
+                f"{rotation.name}: trip {current.fahrt_id} arrives at "
                 f"{current.arrival.isoformat()}, after trip {following.fahrt_id} departs "
                 f"at {following.departure.isoformat()}"
             )
@@ -132,7 +132,7 @@ class IngestReport:
         if self.files_invalid:
             lines.append(
                 f"  WARNING: {len(self.files_invalid)} input files could not be read and "
-                f"were skipped. Any vehicle working reaching into them is counted as "
+                f"were skipped. Any vehicle rotation reaching into them is counted as "
                 f"incomplete below. Examples:"
             )
             for name in sorted(self.files_invalid)[: self.example_limit]:
@@ -142,16 +142,16 @@ class IngestReport:
             lines.append(
                 f"  {self.n_dropped_trips} of {self.n_fahrten_total} trips in the input " f"were not imported."
             )
-        if self.n_truncated_workings:
-            lines.append(f"  {self.n_truncated_workings} vehicle workings were dropped as " f"incomplete:")
+        if self.n_truncated_rotations:
+            lines.append(f"  {self.n_truncated_rotations} vehicle rotations were dropped as " f"incomplete:")
             for reason, count in sorted(self.truncation_reasons.items(), key=lambda kv: -kv[1]):
                 lines.append(f"    {count:6d} × {reason}")
-        if self.n_empty_workings:
-            lines.append(f"  {self.n_empty_workings} vehicle workings contained no usable trips.")
+        if self.n_empty_rotations:
+            lines.append(f"  {self.n_empty_rotations} vehicle rotations contained no usable trips.")
         if self.n_unresolvable_routes:
             lines.append(
                 f"  WARNING: {self.n_unresolvable_routes} routes could not be resolved at "
-                f"all, and the {self.n_workings_on_unresolvable_routes} vehicle workings "
+                f"all, and the {self.n_rotations_on_unresolvable_routes} vehicle rotations "
                 f"running them were dropped. This should not happen; please report it."
             )
         if self.n_degenerate_routes:

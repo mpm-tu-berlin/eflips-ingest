@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 from eflips.ingest.bvgxml._network import Network, StationKind, StationRef
 from eflips.ingest.bvgxml._read import Fahrt, RawCorpus
 from eflips.ingest.bvgxml._report import IngestReport
+from eflips.ingest.bvgxml._rotations import RawRotation, RotationTable, describe_truncation
 from eflips.ingest.bvgxml._routes import ResolvedRoute, RouteTable, TimeProfile
-from eflips.ingest.bvgxml._workings import Working, WorkingTable, describe_truncation
 
 #: The export gives times as seconds since local midnight of the ``Kalenderdatum``.
 DEFAULT_TIMEZONE = ZoneInfo("Europe/Berlin")
@@ -33,7 +33,7 @@ DEADHEAD_FAHRTARTEN = frozenset({"E", "A", "B"})
 
 
 class _UnresolvableRoute(Exception):
-    """A working runs a route :mod:`._routes` could make nothing of. Internal to this module."""
+    """A rotation runs a route :mod:`._routes` could make nothing of. Internal to this module."""
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class Trip:
 
 @dataclass(frozen=True)
 class Rotation:
-    """One vehicle working, as a chain of trips."""
+    """One vehicle rotation, as a chain of trips."""
 
     name: str
     vehicle_type: str
@@ -94,20 +94,20 @@ def build_schedule(
     corpus: RawCorpus,
     network: Network,
     route_table: RouteTable,
-    working_table: WorkingTable,
+    rotation_table: RotationTable,
     timezone: ZoneInfo = DEFAULT_TIMEZONE,
 ) -> Schedule:
     """
     Turn the resolved corpus into the finished schedule.
 
-    Only *complete* vehicle workings become rotations. A truncated working is one whose
+    Only *complete* vehicle rotations are kept. A truncated rotation is one whose
     remaining trips are in files the user did not supply, or on days outside the export;
     keeping it would put a vehicle on the road that never returns to a depot.
 
     :param corpus: the merged input
     :param network: the resolved network
     :param route_table: the resolved routes
-    :param working_table: the reassembled vehicle workings
+    :param rotation_table: the reassembled vehicle rotations
     :param timezone: the zone the export's midnight offsets are relative to
     :return: the finished schedule
     """
@@ -119,27 +119,27 @@ def build_schedule(
     used_routes: Dict[int, ResolvedRoute] = {}
     used_vehicle_types: Dict[str, None] = {}
 
-    for working in working_table.workings.values():
-        if not working.is_complete:
-            report.note_truncated_working(working, describe_truncation(working))
+    for raw_rotation in rotation_table.rotations.values():
+        if not raw_rotation.is_complete:
+            report.note_truncated_rotation(raw_rotation, describe_truncation(raw_rotation))
             continue
 
         try:
-            trips = _trips_of(working, corpus, network, route_table, timezone, report)
+            trips = _trips_of(raw_rotation, corpus, network, route_table, timezone, report)
         except _UnresolvableRoute as e:
             # Unlike a degenerate route, one that could not be resolved at all has no known
             # endpoints, so leaving it out would break the vehicle's chain silently. Drop
-            # the whole working instead, the same way a truncated one is dropped.
-            report.note_working_on_unresolvable_route(working, str(e))
+            # the whole rotation instead, the same way a truncated one is dropped.
+            report.note_rotation_on_unresolvable_route(raw_rotation, str(e))
             continue
         if not trips:
-            report.note_empty_working()
+            report.note_empty_rotation()
             continue
 
-        _check_chain(working, trips, report)
+        _check_chain(raw_rotation, trips, report)
 
-        rotations.append(Rotation(name=working.name, vehicle_type=working.vehicle_type, trips=tuple(trips)))
-        used_vehicle_types.setdefault(working.vehicle_type, None)
+        rotations.append(Rotation(name=raw_rotation.name, vehicle_type=raw_rotation.vehicle_type, trips=tuple(trips)))
+        used_vehicle_types.setdefault(raw_rotation.vehicle_type, None)
         for trip in trips:
             used_routes.setdefault(id(trip.route), trip.route)
 
@@ -169,21 +169,21 @@ def build_schedule(
 
 
 def _trips_of(
-    working: Working,
+    raw_rotation: RawRotation,
     corpus: RawCorpus,
     network: Network,
     route_table: RouteTable,
     timezone: ZoneInfo,
     report: IngestReport,
 ) -> List[Trip]:
-    """Materialise a working's trips, in the order the vehicle runs them."""
+    """Materialise a rotation's trips, in the order the vehicle runs them."""
     trips: List[Trip] = []
-    for segment in sorted(working.segments, key=lambda s: (s.day, s.beginn_s, s.key)):
+    for segment in sorted(raw_rotation.segments, key=lambda s: (s.day, s.beginn_s, s.key)):
         for fahrt_id in segment.fahrt_ids:
             fahrt = corpus.fahrten.get(fahrt_id)
             if fahrt is None:
                 raise ValueError(
-                    f"Vehicle working {working.name!r} references Fahrt {fahrt_id}, which "
+                    f"Vehicle rotation {raw_rotation.name!r} references Fahrt {fahrt_id}, which "
                     f"no input file defines, even though the Umlaufteilgruppe carrying it "
                     f"does have a Fahrtreihenfolge. The input zip is inconsistent."
                 )
@@ -230,19 +230,19 @@ def _trip(
     )
 
 
-def _check_chain(working: Working, trips: Sequence[Trip], report: IngestReport) -> None:
+def _check_chain(raw_rotation: RawRotation, trips: Sequence[Trip], report: IngestReport) -> None:
     """
     Verify that the vehicle can actually run the trips in this order.
 
-    Both properties below hold for every complete working in both reference corpora, so a
+    Both properties below hold for every complete rotation in both reference corpora, so a
     violation means either the input contradicts itself or this ingester has a bug. It is
-    reported rather than raised: one bad working should not fail a whole import.
+    reported rather than raised: one bad rotation should not fail a whole import.
     """
     for current, following in zip(trips, trips[1:]):
         if current.stops[-1].station != following.stops[0].station:
-            report.note_discontinuity(working, current, following)
+            report.note_discontinuity(raw_rotation, current, following)
         if current.arrival > following.departure:
-            report.note_overlap(working, current, following)
+            report.note_overlap(raw_rotation, current, following)
 
 
 def first_and_last_are_depots(rotation: Rotation) -> bool:

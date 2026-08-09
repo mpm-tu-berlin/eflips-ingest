@@ -23,7 +23,7 @@ Verified across three reference corpora: 1,648 of 1,651 ``BPunkt`` grid points h
 (761 of 761) and the 2026 export (140 of 140); the three exceptions are all in the 2023
 dump, and they fall back to :attr:`StationKind.UNMATCHED_STOP` with a warning rather than
 being dropped. Under the resulting station mapping *every* consecutive trip pair in a
-vehicle working shares an endpoint, in all three corpora. That is what makes station
+vehicle rotation shares an endpoint, in all three corpora. That is what makes station
 merging, short-name prefix matching and depot-name token lists unnecessary.
 
 The twin is looked up in the merged corpus, not in one file: roughly 8 % of the ``BPunkt``

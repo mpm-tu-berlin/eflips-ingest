@@ -1,30 +1,30 @@
 """
-Reassembling physical vehicle workings from their per-line slices.
+Reassembling physical vehicle rotations from their per-line slices.
 
-The export slices the network by ``(Linie, Stichtag)``. A vehicle working
+The export slices the network by ``(Linie, Stichtag)``. A vehicle rotation
 (``Fahrzeugumlauf``) that serves several lines therefore appears in several files, and each
 copy carries only that file's line's trips — every other ``Umlaufteilgruppe`` comes through
 with its ``Fahrtreihenfolge`` omitted. Reassembling them is a join, not a heuristic: the
 element repeats its *full* ``Umlauf`` group in every copy, so the ordered tuple of
-``(UmlaufID, Kalenderdatum)`` pairs identifies the working exactly. In the Berlin 2025-06
-corpus 13,968 ``Fahrzeugumlauf`` elements collapse into 10,365 workings with no member
+``(UmlaufID, Kalenderdatum)`` pairs identifies the rotation exactly. In the Berlin 2025-06
+corpus 13,968 ``Fahrzeugumlauf`` elements collapse into 10,365 rotations with no member
 belonging to two groups.
 
 That join also gives an **exact completeness test**, which is the part that matters
-downstream. A working is truncated iff some ``Umlaufteilgruppe`` has no
+downstream. A rotation is truncated iff some ``Umlaufteilgruppe`` has no
 ``Fahrtreihenfolge`` in *any* input file, and the cause is readable from the data:
 
 ``WINDOW_EDGE``
     The teilgruppe's ``Kalenderdatum`` lies outside the exported ``Stichtag`` range — a
     night bus whose evening half belongs to the day before the export starts. 370 of the
-    443 truncated workings in Berlin 2025-06.
+    443 truncated rotations in Berlin 2025-06.
 ``LINE_NOT_SUPPLIED``
     No input file covers the teilgruppe's ``(Linie, Stichtag)``. The user left a file out
-    of the zip. 75 of the 443, naming four lines (two of the workings hit both causes).
+    of the zip. 75 of the 443, naming four lines (two of the rotations hit both causes).
 
-All 9,922 structurally complete workings in that corpus start at an ``EPkt`` and end at an
+All 9,922 structurally complete rotations in that corpus start at an ``EPkt`` and end at an
 ``APkt``, so this test subsumes the depot-name heuristic it replaces — and unlike that
-heuristic it does not also keep 8 workings that are in fact truncated.
+heuristic it does not also keep 8 rotations that are in fact truncated.
 """
 import logging
 from collections import Counter
@@ -35,16 +35,16 @@ from typing import Dict, List, Tuple
 
 from eflips.ingest.bvgxml._read import RawCorpus, parse_kalenderdatum
 
-#: The identity of one physical vehicle working: the ordered ``(UmlaufID, Kalenderdatum)``
+#: The identity of one physical vehicle rotation: the ordered ``(UmlaufID, Kalenderdatum)``
 #: pairs of the Umläufe grouped into one ``Fahrzeugumlauf`` element.
-WorkingKey = Tuple[Tuple[int, date], ...]
+RotationKey = Tuple[Tuple[int, date], ...]
 
-#: The identity of one ``Umlaufteilgruppe`` within a working: ``(UmlaufID, LfdNr)``.
+#: The identity of one ``Umlaufteilgruppe`` within a rotation: ``(UmlaufID, LfdNr)``.
 SegmentKey = Tuple[int, int]
 
 
 class TruncationCause(Enum):
-    """Why a part of a vehicle working has no trips anywhere in the input."""
+    """Why a part of a vehicle rotation has no trips anywhere in the input."""
 
     #: Its ``Kalenderdatum`` is outside the exported ``Stichtag`` range.
     WINDOW_EDGE = "window_edge"
@@ -58,7 +58,7 @@ class TruncationCause(Enum):
 
 
 @dataclass(frozen=True)
-class WorkingSegment:
+class RotationSegment:
     """One ``Umlaufteilgruppe`` that a file supplied trips for."""
 
     key: SegmentKey
@@ -79,14 +79,14 @@ class MissingSegment:
 
 
 @dataclass
-class Working:
-    """One physical vehicle working, reassembled from every file that mentions it."""
+class RawRotation:
+    """One physical vehicle rotation, reassembled from every file that mentions it."""
 
-    key: WorkingKey
+    key: RotationKey
     name: str
     vehicle_type: str
     depot: int
-    segments: List[WorkingSegment] = field(default_factory=list)
+    segments: List[RotationSegment] = field(default_factory=list)
     missing: List[MissingSegment] = field(default_factory=list)
 
     @property
@@ -95,7 +95,7 @@ class Working:
 
     def fahrt_ids(self) -> List[int]:
         """
-        Every trip of the working, in the order the vehicle runs them.
+        Every trip of the rotation, in the order the vehicle runs them.
 
         The authoritative order is ``(Kalenderdatum, Umlaufteilgruppe/Beginn,
         Fahrt/LfdNr)``. Sorting by ``Startzeit`` instead would tie a pull-out against the
@@ -109,23 +109,23 @@ class Working:
 
 
 @dataclass
-class WorkingTable:
-    """Every vehicle working of the corpus."""
+class RotationTable:
+    """Every vehicle rotation of the corpus."""
 
-    workings: Dict[WorkingKey, Working]
-
-    @property
-    def complete(self) -> List[Working]:
-        return [w for w in self.workings.values() if w.is_complete]
+    rotations: Dict[RotationKey, RawRotation]
 
     @property
-    def truncated(self) -> List[Working]:
-        return [w for w in self.workings.values() if not w.is_complete]
+    def complete(self) -> List[RawRotation]:
+        return [r for r in self.rotations.values() if r.is_complete]
+
+    @property
+    def truncated(self) -> List[RawRotation]:
+        return [r for r in self.rotations.values() if not r.is_complete]
 
     def truncation_summary(self) -> Dict[TruncationCause, int]:
         counts: Dict[TruncationCause, int] = Counter()
-        for working in self.truncated:
-            for cause in {segment.cause for segment in working.missing}:
+        for rotation in self.truncated:
+            for cause in {segment.cause for segment in rotation.missing}:
                 counts[cause] += 1
         return dict(counts)
 
@@ -133,28 +133,28 @@ class WorkingTable:
         return sorted(
             {
                 segment.line
-                for working in self.truncated
-                for segment in working.missing
+                for rotation in self.truncated
+                for segment in rotation.missing
                 if segment.cause is TruncationCause.LINE_NOT_SUPPLIED
             }
         )
 
 
-def build_workings(corpus: RawCorpus) -> WorkingTable:
+def build_rotations(corpus: RawCorpus) -> RotationTable:
     """
-    Group every ``Fahrzeugumlauf`` element of the corpus into physical vehicle workings.
+    Group every ``Fahrzeugumlauf`` element of the corpus into physical vehicle rotations.
 
     :param corpus: the merged input
-    :return: the working table
-    :raises ValueError: if two files contradict each other about a working
+    :return: the rotation table
+    :raises ValueError: if two files contradict each other about a rotation
     """
     logger = logging.getLogger(__name__)
 
-    workings: Dict[WorkingKey, Working] = {}
-    key_by_member: Dict[Tuple[int, date], WorkingKey] = {}
+    rotations: Dict[RotationKey, RawRotation] = {}
+    key_by_member: Dict[Tuple[int, date], RotationKey] = {}
     # Every Umlaufteilgruppe the corpus mentions, whether or not it has trips.
-    declared: Dict[WorkingKey, Dict[SegmentKey, Tuple[date, str]]] = {}
-    supplied: Dict[WorkingKey, Dict[SegmentKey, WorkingSegment]] = {}
+    declared: Dict[RotationKey, Dict[SegmentKey, Tuple[date, str]]] = {}
+    supplied: Dict[RotationKey, Dict[SegmentKey, RotationSegment]] = {}
 
     for _file_index, element in corpus.fahrzeugumlaeufe:
         members = tuple(
@@ -162,17 +162,17 @@ def build_workings(corpus: RawCorpus) -> WorkingTable:
         )
         name = " ".join(umlauf.umlaufbezeichnung for umlauf in element.umlaeufe.umlauf)
 
-        working = workings.get(members)
-        if working is None:
+        rotation = rotations.get(members)
+        if rotation is None:
             _check_grouping(members, key_by_member)
-            working = Working(key=members, name=name, vehicle_type=element.fahrzeugtyp, depot=element.betriebshof)
-            workings[members] = working
+            rotation = RawRotation(key=members, name=name, vehicle_type=element.fahrzeugtyp, depot=element.betriebshof)
+            rotations[members] = rotation
             declared[members] = {}
             supplied[members] = {}
             for member in members:
                 key_by_member[member] = members
         else:
-            _check_agreement(working, name, element.fahrzeugtyp, element.betriebshof)
+            _check_agreement(rotation, name, element.fahrzeugtyp, element.betriebshof)
 
         for umlauf in element.umlaeufe.umlauf:
             day = parse_kalenderdatum(umlauf.kalenderdatum)
@@ -185,11 +185,11 @@ def build_workings(corpus: RawCorpus) -> WorkingTable:
                 previous = supplied[members].get(segment_key)
                 if previous is not None and previous.fahrt_ids != fahrt_ids:
                     raise ValueError(
-                        f"Vehicle working {name!r} ({members}): Umlaufteilgruppe "
+                        f"Vehicle rotation {name!r} ({members}): Umlaufteilgruppe "
                         f"{segment_key} has different trips in two input files. The "
-                        f"per-line slices of a working must agree."
+                        f"per-line slices of a rotation must agree."
                     )
-                supplied[members][segment_key] = WorkingSegment(
+                supplied[members][segment_key] = RotationSegment(
                     key=segment_key,
                     day=day,
                     line=teilgruppe.linie,
@@ -201,8 +201,8 @@ def build_workings(corpus: RawCorpus) -> WorkingTable:
 
     stichtage = corpus.stichtage
     slices = corpus.slices
-    for key, working in workings.items():
-        working.segments = list(supplied[key].values())
+    for key, rotation in rotations.items():
+        rotation.segments = list(supplied[key].values())
         for segment_key, (day, line) in declared[key].items():
             if segment_key in supplied[key]:
                 continue
@@ -212,20 +212,20 @@ def build_workings(corpus: RawCorpus) -> WorkingTable:
                 cause = TruncationCause.LINE_NOT_SUPPLIED
             else:
                 cause = TruncationCause.UNEXPLAINED
-            working.missing.append(MissingSegment(key=segment_key, day=day, line=line, cause=cause))
+            rotation.missing.append(MissingSegment(key=segment_key, day=day, line=line, cause=cause))
 
-    table = WorkingTable(workings=workings)
+    table = RotationTable(rotations=rotations)
     logger.info(
-        "Reassembled %d Fahrzeugumlauf elements into %d vehicle workings; %d are complete.",
+        "Reassembled %d Fahrzeugumlauf elements into %d vehicle rotations; %d are complete.",
         len(corpus.fahrzeugumlaeufe),
-        len(workings),
+        len(rotations),
         len(table.complete),
     )
     return table
 
 
-def _check_grouping(members: WorkingKey, key_by_member: Dict[Tuple[int, date], WorkingKey]) -> None:
-    """Refuse to build a second working around an Umlauf that already belongs to one."""
+def _check_grouping(members: RotationKey, key_by_member: Dict[Tuple[int, date], RotationKey]) -> None:
+    """Refuse to build a second rotation around an Umlauf that already belongs to one."""
     for member in members:
         conflicting = key_by_member.get(member)
         if conflicting is not None:
@@ -233,34 +233,34 @@ def _check_grouping(members: WorkingKey, key_by_member: Dict[Tuple[int, date], W
                 f"Inconsistent Fahrzeugumlauf grouping between input files: Umlauf "
                 f"(UmlaufID={member[0]}, Kalenderdatum={member[1]}) appears both in the "
                 f"group {conflicting} and in the group {members}. The input files "
-                f"contradict each other about which Umläufe form one vehicle working."
+                f"contradict each other about which Umläufe form one vehicle rotation."
             )
 
 
-def _check_agreement(working: Working, name: str, vehicle_type: str, depot: int) -> None:
-    """All copies of a working must describe the same vehicle."""
-    if working.name != name:
+def _check_agreement(rotation: RawRotation, name: str, vehicle_type: str, depot: int) -> None:
+    """All copies of a rotation must describe the same vehicle."""
+    if rotation.name != name:
         raise ValueError(
-            f"Vehicle working {working.key} is named {working.name!r} in one input file "
+            f"Vehicle rotation {rotation.key} is named {rotation.name!r} in one input file "
             f"but {name!r} in another. The input files contradict each other."
         )
-    if working.vehicle_type != vehicle_type:
+    if rotation.vehicle_type != vehicle_type:
         raise ValueError(
-            f"Vehicle working {working.name!r} has vehicle type {working.vehicle_type!r} "
+            f"Vehicle rotation {rotation.name!r} has vehicle type {rotation.vehicle_type!r} "
             f"in one input file but {vehicle_type!r} in another. The input files "
             f"contradict each other."
         )
-    if working.depot != depot:
+    if rotation.depot != depot:
         raise ValueError(
-            f"Vehicle working {working.name!r} has Betriebshof {working.depot} in one "
+            f"Vehicle rotation {rotation.name!r} has Betriebshof {rotation.depot} in one "
             f"input file but {depot} in another. The input files contradict each other."
         )
 
 
-def describe_truncation(working: Working) -> str:
-    """A one-line explanation of why a working was dropped, for the ingest log."""
+def describe_truncation(rotation: RawRotation) -> str:
+    """A one-line explanation of why a rotation was dropped, for the ingest log."""
     causes: Dict[TruncationCause, List[MissingSegment]] = {}
-    for segment in working.missing:
+    for segment in rotation.missing:
         causes.setdefault(segment.cause, []).append(segment)
     parts: List[str] = []
     if TruncationCause.WINDOW_EDGE in causes:

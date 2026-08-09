@@ -4,7 +4,7 @@ Reading and merging BVG-XML ``Linienfahrplan`` files.
 This is the only module that touches XML. It parses each file, validates it against the
 bundled ``bvg_xml.xsd``, and merges the per-file tables into corpus-wide ones. Nothing
 here interprets the data — that is :mod:`._network`, :mod:`._routes` and
-:mod:`._workings`.
+:mod:`._rotations`.
 
 Merging matters because **the file is not the unit of interpretation**. The export slices
 the network by ``(Linie, Stichtag)``, so a single file is an arbitrary window onto a
@@ -14,7 +14,7 @@ larger dataset:
   every one of them has a twin somewhere in the corpus.
 - ``Strecke/ID`` is file-local (``xs:short``); the stable identity of a segment is
   ``(Startpunkt, Endpunkt)``, and its length agrees across files.
-- A vehicle working is split across one file per line it touches, and cannot be judged
+- A vehicle rotation is split across one file per line it touches, and cannot be judged
   complete from any single one of them.
 
 Merging is therefore not an optimisation; it is what makes the downstream mappings total.
@@ -216,7 +216,7 @@ class RawCorpus:
         The ``(Linie, Stichtag)`` slices the input covers.
 
         This, not the set of lines, is the unit the export works in: a file describes one
-        line on one day, so a working that runs line M29 on a day for which no M29 file was
+        line on one day, so a rotation that runs line M29 on a day for which no M29 file was
         supplied is just as unimportable as one whose line is missing entirely.
         """
         return frozenset((f.linie, f.stichtag) for f in self.files)
@@ -240,7 +240,7 @@ class PreparedInput:
     skipped_empty: List[str] = field(default_factory=list)
 
     #: Names of files that could not be read, and why. Data *is* lost with these, so any
-    #: vehicle working reaching into one of them is reported as truncated further down the
+    #: vehicle rotation reaching into one of them is reported as truncated further down the
     #: line rather than silently kept.
     skipped_invalid: Dict[str, str] = field(default_factory=dict)
 
@@ -279,7 +279,7 @@ def read_files(
         )
     if prepared.skipped_invalid:
         logger.warning(
-            "%d of %d files could not be read and were skipped: %s. Vehicle workings that "
+            "%d of %d files could not be read and were skipped: %s. Vehicle rotations that "
             "reach into them will be reported as incomplete and dropped.",
             len(prepared.skipped_invalid),
             len(ordered),

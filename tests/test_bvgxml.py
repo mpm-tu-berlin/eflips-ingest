@@ -25,6 +25,7 @@ from eflips.ingest.bvgxml._read import (
     read_corpus,
     read_files,
 )
+from eflips.ingest.bvgxml._rotations import TruncationCause, build_rotations
 from eflips.ingest.bvgxml._routes import (
     CROW_FLY_DETOUR_FACTOR,
     DEPOT_LEG_SPEED_KMH,
@@ -34,7 +35,6 @@ from eflips.ingest.bvgxml._routes import (
     spread_arrivals,
 )
 from eflips.ingest.bvgxml._schedule import DEADHEAD_FAHRTARTEN, build_schedule, first_and_last_are_depots
-from eflips.ingest.bvgxml._workings import TruncationCause, build_workings
 from eflips.ingest.bvgxml._xmldata import Linienfahrplan, NetzpunktNetzpunkttyp
 from tests.base import BaseIngester
 
@@ -74,9 +74,9 @@ def resolved(corpus):
     """The whole pipeline over the sample corpus, up to but excluding the database."""
     network = build_network(corpus)
     routes = resolve_routes(corpus, network)
-    workings = build_workings(corpus)
-    schedule = build_schedule(corpus, network, routes, workings)
-    return network, routes, workings, schedule
+    rotations = build_rotations(corpus)
+    schedule = build_schedule(corpus, network, routes, rotations)
+    return network, routes, rotations, schedule
 
 
 class TestRead:
@@ -606,20 +606,20 @@ class TestSpreadArrivals:
             assert len(offsets) == len(resolved_route.stops)
 
 
-class TestWorkings:
-    def test_workings_are_keyed_by_their_umlauf_group(self, corpus, resolved):
-        _, _, workings, _ = resolved
-        assert workings.workings
+class TestRotations:
+    def test_rotations_are_keyed_by_their_umlauf_group(self, corpus, resolved):
+        _, _, rotations, _ = resolved
+        assert rotations.rotations
         seen = set()
-        for key in workings.workings:
+        for key in rotations.rotations:
             for member in key:
-                assert member not in seen, "an Umlauf may belong to only one working"
+                assert member not in seen, "an Umlauf may belong to only one rotation"
                 seen.add(member)
 
-    def test_complete_workings_run_depot_to_depot(self, resolved):
+    def test_complete_rotations_run_depot_to_depot(self, resolved):
         """
         The structural completeness test subsumes the depot-name heuristic it replaces:
-        every working whose parts all carry trips starts at an EPkt and ends at an APkt.
+        every rotation whose parts all carry trips starts at an EPkt and ends at an APkt.
         """
         _, _, _, schedule = resolved
         assert schedule.rotations
@@ -627,28 +627,28 @@ class TestWorkings:
             assert first_and_last_are_depots(rotation), rotation.name
 
     def test_truncation_causes_are_named(self, resolved):
-        _, _, workings, _ = resolved
-        assert workings.truncated
-        for working in workings.truncated:
-            assert working.missing
-            for segment in working.missing:
+        _, _, rotations, _ = resolved
+        assert rotations.truncated
+        for rotation in rotations.truncated:
+            assert rotation.missing
+            for segment in rotation.missing:
                 assert segment.cause in TruncationCause
-        # The samples are three unrelated lines, so most workings reach into files that
+        # The samples are three unrelated lines, so most rotations reach into files that
         # were not supplied.
-        assert TruncationCause.LINE_NOT_SUPPLIED in workings.truncation_summary()
-        assert workings.missing_lines()
+        assert TruncationCause.LINE_NOT_SUPPLIED in rotations.truncation_summary()
+        assert rotations.missing_lines()
 
     def test_trips_are_ordered_by_day_then_segment_then_position(self, resolved):
-        _, _, workings, _ = resolved
-        for working in workings.workings.values():
-            if not working.segments:
+        _, _, rotations, _ = resolved
+        for rotation in rotations.rotations.values():
+            if not rotation.segments:
                 continue
             expected = [
                 fahrt_id
-                for segment in sorted(working.segments, key=lambda s: (s.day, s.beginn_s, s.key))
+                for segment in sorted(rotation.segments, key=lambda s: (s.day, s.beginn_s, s.key))
                 for fahrt_id in segment.fahrt_ids
             ]
-            assert working.fahrt_ids() == expected
+            assert rotation.fahrt_ids() == expected
 
 
 class TestSchedule:
@@ -682,9 +682,9 @@ class TestSchedule:
         for fahrt in corpus.fahrten.values():
             assert (fahrt.fahrtart in DEADHEAD_FAHRTARTEN) == (fahrt.fahrgastrelevant.value == "N")
 
-    def test_every_trip_of_a_complete_working_is_imported(self, resolved):
-        _, routes, workings, schedule = resolved
-        expected = sum(len(w.fahrt_ids()) for w in workings.complete)
+    def test_every_trip_of_a_complete_rotation_is_imported(self, resolved):
+        _, routes, rotations, schedule = resolved
+        expected = sum(len(r.fahrt_ids()) for r in rotations.complete)
         assert schedule.report.n_trips == expected - schedule.report.n_trips_on_degenerate_routes
 
     def test_stop_times_align_with_the_route(self, resolved):

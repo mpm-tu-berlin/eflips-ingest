@@ -19,9 +19,9 @@ from eflips.ingest.base import AbstractIngester
 from eflips.ingest.bvgxml._emit import emit, fix_max_sequence
 from eflips.ingest.bvgxml._network import build_network
 from eflips.ingest.bvgxml._read import PreparedInput, merge_corpus, read_files
+from eflips.ingest.bvgxml._rotations import build_rotations
 from eflips.ingest.bvgxml._routes import resolve_routes
 from eflips.ingest.bvgxml._schedule import build_schedule
-from eflips.ingest.bvgxml._workings import build_workings
 
 
 class BvgxmlIngester(AbstractIngester):
@@ -47,7 +47,7 @@ class BvgxmlIngester(AbstractIngester):
     The merge is what makes the resolution total. The export slices the network by
     ``(Linie, Stichtag)``, so no single file is a complete picture: about 8 % of a file's
     ``BPunkt`` grid points have no ``Hst`` twin in that same file, ``Strecke/ID`` is
-    file-local, and a vehicle working is spread across one file per line it touches.
+    file-local, and a vehicle rotation is spread across one file per line it touches.
     """
 
     def prepare(  # type: ignore[override]
@@ -154,16 +154,16 @@ class BvgxmlIngester(AbstractIngester):
         report(0.25)
         route_table = resolve_routes(corpus, network)
         report(0.55)
-        working_table = build_workings(corpus)
+        rotation_table = build_rotations(corpus)
         report(0.6)
-        schedule = build_schedule(corpus, network, route_table, working_table)
+        schedule = build_schedule(corpus, network, route_table, rotation_table)
         schedule.report.absorb_prepared_input(prepared)
         report(0.65)
 
         # The Schedule holds no reference back to the parsed XML, so let the whole corpus
         # go before the write starts. On a full-city import that is 1400-odd parsed
         # documents' worth of memory, and the write is the part that needs the headroom.
-        del corpus, route_table, working_table, prepared
+        del corpus, route_table, rotation_table, prepared
         gc.collect()
 
         engine = create_engine(self.database_url)
@@ -209,7 +209,7 @@ class BvgxmlIngester(AbstractIngester):
                 "and the files are then merged and checked against each other. Files the export "
                 "answered with 'no data' for, and files that are corrupt, are skipped and "
                 "counted rather than rejecting the whole archive. Include every line the "
-                "exported vehicle workings touch: a working whose other lines are missing "
+                "exported vehicle rotations touch: a rotation whose other lines are missing "
                 "cannot be imported, and the ingest log will say which lines those are."
             ),
         }

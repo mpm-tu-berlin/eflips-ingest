@@ -173,7 +173,7 @@ class RouteTable:
 
     #: Routes whose own data is self-contradictory, so nothing could be made of them. Kept
     #: apart from the degenerate ones: a degenerate route can be dropped without breaking
-    #: the vehicle's chain, this kind cannot, so its workings have to go too.
+    #: the vehicle's chain, this kind cannot, so its rotations have to go too.
     unresolvable: Set[RouteId] = field(default_factory=set)
 
     #: Counts for the ingest summary.
@@ -205,12 +205,12 @@ def resolve_routes(corpus: RawCorpus, network: Network) -> RouteTable:
             resolved = _resolve_one(route, route_id, line, corpus, network, table)
         except ValueError as e:
             # One route whose own numbers contradict each other must not cost the user a
-            # 1,400-file import. Record it and carry on; the workings that run it are
+            # 1,400-file import. Record it and carry on; the rotations that run it are
             # dropped in :func:`~eflips.ingest.bvgxml._schedule.build_schedule`, because
             # unlike a degenerate route this one cannot just be left out of the chain.
             logger.warning(
                 "Route %d of line %s could not be resolved: %s Dropping the route and "
-                "every vehicle working that runs it.",
+                "every vehicle rotation that runs it.",
                 route.lfd_nr,
                 line,
                 e,
