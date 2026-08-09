@@ -165,12 +165,50 @@ class TestRead:
         assert seen == [0.25, 0.5, 0.75, 1.0]
 
     def test_moved_netzpunkt_does_not_raise(self):
-        """A stop that is re-surveyed between export days is new data, not a conflict."""
+        """A stop that is relocated between export days is new data, not a conflict."""
         first, second, original = self._two_files_sharing_a_netzpunkt()
         moved = second.doc.streckennetz_daten.netzpunkte.netzpunkt[-1]
         moved.xkoordinate += 93_000  # 93 m, as observed between the 20. and 21.06.2025 files
         merged = merge_corpus([first, second])
+        # One reading each, so the tie falls to the earlier file.
         assert merged.netzpunkte[original.nummer].xkoordinate == original.xkoordinate
+
+    def test_moved_netzpunkt_takes_the_position_most_files_agree_on(self):
+        """
+        A relocation is settled by majority, not by which file happens to be read first.
+
+        Andreasstr./Lange Str. sits at its old position in five of the seven Berlin 2025-06
+        files and at its new one in two, so the old position wins there. Reverse the
+        majority, as an import that starts after the move would, and the new one has to.
+        """
+        first, second, original = self._two_files_sharing_a_netzpunkt()
+        third = RawFile.from_document(sample_paths()[2], load_and_validate_xml(sample_paths()[2]))
+        for raw in (second, third):
+            planted = replace(original, xkoordinate=original.xkoordinate + 93_000)
+            if raw is third:
+                raw.doc.streckennetz_daten.netzpunkte.netzpunkt.append(planted)
+            else:
+                raw.doc.streckennetz_daten.netzpunkte.netzpunkt[-1] = planted
+
+        merged = merge_corpus([first, second, third])
+
+        assert merged.netzpunkte[original.nummer].xkoordinate == original.xkoordinate + 93_000
+        assert merged.netzpunkte[original.nummer].ykoordinate == original.ykoordinate
+
+    def test_moved_netzpunkt_is_warned_about_by_name(self, caplog):
+        """
+        The operator has to be able to see *which* stop moved and how far: the remedy is to
+        import a narrower date range, and that is their decision to make.
+        """
+        first, second, original = self._two_files_sharing_a_netzpunkt()
+        moved = second.doc.streckennetz_daten.netzpunkte.netzpunkt[-1]
+        moved.xkoordinate += 93_000
+
+        with caplog.at_level(logging.WARNING, logger="eflips.ingest.bvgxml._read"):
+            merge_corpus([first, second])
+
+        assert original.langname in caplog.text
+        assert "93 m" in caplog.text
 
 
 class TestNetwork:

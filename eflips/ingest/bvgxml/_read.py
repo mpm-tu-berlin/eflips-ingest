@@ -26,12 +26,13 @@ files of the 2023 BVG dump), and files do arrive corrupt. Neither should stop th
 zip from being imported, so :func:`read_files` separates both out instead of raising.
 """
 import logging
+import math
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, FrozenSet, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple
 
 from lxml import etree
 from xsdata.formats.dataclass.parsers import XmlParser
@@ -331,11 +332,21 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
             ", ".join(sorted(deployments)),
         )
 
-    # A grid point may legitimately be re-surveyed between export days — Andreasstr./Lange
-    # Str. moves 93 m between the 20.06. and 21.06.2025 files. That is a new position for
-    # the same point, not a contradiction, so only the fields that decide which *station*
-    # the point belongs to are treated as identity.
-    moved_points = 0
+    # A grid point may legitimately be relocated between export days: in the Berlin 2025-06
+    # corpus, Andreasstr./Lange Str. (Netzpunkt 101005166) sits 93 m further south in the
+    # 21.06.2025 file than in the 20.06. one, and the Strecke leading into it shortens by
+    # the same 93 m a day later. All seven files come from one export run, so this is a
+    # dated change in the source's master data, not export noise. That is a new position
+    # for the same point,
+    # not a contradiction, so only the fields that decide which *station* the point belongs
+    # to are treated as identity.
+    #
+    # Which of the positions to keep is a choice, and this is a planning tool: a stop that
+    # moves for a construction site is noise we would rather not model. Collect every
+    # reading and settle on the one most files agree on, the same rule the segment lengths
+    # use below. Unlike a median it always yields a position that was actually surveyed,
+    # rather than the midpoint between two of them when the readings split evenly.
+    point_readings: Dict[int, Counter[Tuple[int, int]]] = {}
     renamed_bereiche = 0
 
     for index, raw in enumerate(files):
@@ -345,8 +356,7 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
             previous = corpus.netzpunkte.get(netzpunkt.nummer)
             if previous is None:
                 corpus.netzpunkte[netzpunkt.nummer] = netzpunkt
-                continue
-            if (
+            elif (
                 previous.netzpunkttyp != netzpunkt.netzpunkttyp
                 or previous.haltestellenbereich != netzpunkt.haltestellenbereich
             ):
@@ -359,8 +369,7 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
                     f"contradict each other about the network; they are probably from "
                     f"different data versions."
                 )
-            if (previous.xkoordinate, previous.ykoordinate) != (netzpunkt.xkoordinate, netzpunkt.ykoordinate):
-                moved_points += 1
+            point_readings.setdefault(netzpunkt.nummer, Counter())[(netzpunkt.xkoordinate, netzpunkt.ykoordinate)] += 1
 
         for bereich in doc.streckennetz_daten.haltestellenbereiche.haltestellenbereich:
             previous_bereich = corpus.haltestellenbereiche.get(bereich.nummer)
@@ -410,6 +419,8 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
         for fahrzeugumlauf in doc.fahrzeugumlauf_daten.fahrzeugumlauf:
             corpus.fahrzeugumlaeufe.append((index, fahrzeugumlauf))
 
+    _settle_coordinates(corpus, point_readings)
+
     ambiguous = 0
     for pair, readings in segment_readings.items():
         # Most common reading, ties broken towards the longer one so that an estimate is
@@ -424,12 +435,6 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
             "common reading of each (ties broken towards the longer one).",
             ambiguous,
             len(segment_readings),
-        )
-    if moved_points:
-        logger.info(
-            "%d Netzpunkte have different coordinates in different files (a re-survey "
-            "between export days); using the earliest reading of each.",
-            moved_points,
         )
     if renamed_bereiche:
         logger.info(
@@ -450,6 +455,45 @@ def merge_corpus(files: Sequence[RawFile]) -> RawCorpus:
         len(corpus.fahrzeugumlaeufe),
     )
     return corpus
+
+
+def _settle_coordinates(corpus: RawCorpus, readings: Mapping[int, Counter[Tuple[int, int]]]) -> None:
+    """
+    Give every grid point the position most of its files agree on, and report the moves.
+
+    Warned about rather than logged quietly: the corpus that comes out describes the network
+    as it stood on *most* of the imported days, which is not the network of any one of them.
+    That is the right trade for a planning tool, but it is a decision the operator should
+    see, because the remedy — importing a narrower date range — is theirs to make.
+    """
+    logger = logging.getLogger(__name__)
+
+    moved: List[Tuple[float, int, str]] = []
+    for number, counter in readings.items():
+        if len(counter) == 1:
+            continue
+        # Ties go to the earliest reading: ``Counter`` iterates in insertion order and
+        # ``max`` returns the first of the maximal items, and files are merged in date order.
+        chosen = max(counter.items(), key=lambda item: item[1])[0]
+        point = corpus.netzpunkte[number]
+        corpus.netzpunkte[number] = replace(point, xkoordinate=chosen[0], ykoordinate=chosen[1])
+        # Soldner coordinates are in millimetres, and the projection is Cartesian, so the
+        # straight-line distance is the plain Euclidean one.
+        furthest = max(math.dist(chosen, other) for other in counter) / 1000.0
+        moved.append((furthest, number, point.langname))
+
+    if moved:
+        moved.sort(reverse=True)
+        logger.warning(
+            "The input files place %d grid point%s at more than one position, having been "
+            "relocated between export days (%s). Each keeps the position that most of "
+            "its files agree on, so the resulting network is the one in force on most of "
+            "the imported days rather than on any single one. Import a narrower date range "
+            "if you need one particular day's network.",
+            len(moved),
+            "" if len(moved) == 1 else "s",
+            "; ".join(f"{name} moves {distance:.0f} m" for distance, _, name in moved[:5]),
+        )
 
 
 def _file_of_fahrt(corpus: RawCorpus, fahrt_id: int, files: Sequence[RawFile]) -> str:
