@@ -632,7 +632,8 @@ class TestSpreadArrivals:
         routes = resolve_routes(corpus, build_network(corpus))
 
         route_id = (0, route.lfd_nr)
-        assert route_id not in routes.unresolvable, "the route must resolve, not be dropped"
+        # resolve_routes() above must not have raised: a route the export carries no driving
+        # time for is ordinary input, not the self-contradiction that aborts an import.
         resolved_route = routes.routes[routes.shape_of[route_id]]
         assert len(resolved_route.stops) > 2, "the point of this test is a route with many stops"
 

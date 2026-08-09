@@ -43,8 +43,6 @@ class IngestReport:
     n_trips_on_degenerate_routes: int = 0
     n_truncated_rotations: int = 0
     n_empty_rotations: int = 0
-    n_unresolvable_routes: int = 0
-    n_rotations_on_unresolvable_routes: int = 0
     truncation_reasons: Dict[str, int] = field(default_factory=dict)
     truncated_examples: List[str] = field(default_factory=list)
 
@@ -72,7 +70,6 @@ class IngestReport:
         self.n_reconstruction_failed = table.n_reconstruction_failed
         self.n_degenerate_routes = table.n_degenerate
         self.n_input_routes_zero_duration = table.n_zero_duration
-        self.n_unresolvable_routes = len(table.unresolvable)
 
     def absorb_written_routes(self, routes: "Iterable[ResolvedRoute]") -> None:
         """Count the routes that are actually written, so the summary matches the database."""
@@ -91,11 +88,6 @@ class IngestReport:
 
     def note_empty_rotation(self) -> None:
         self.n_empty_rotations += 1
-
-    def note_rotation_on_unresolvable_route(self, rotation: "RawRotation", reason: str) -> None:
-        self.n_rotations_on_unresolvable_routes += 1
-        if len(self.truncated_examples) < self.example_limit:
-            self.truncated_examples.append(f"{rotation.name} ({reason})")
 
     def note_discontinuity(self, rotation: "RawRotation", current: "Trip", following: "Trip") -> None:
         self.n_discontinuities += 1
@@ -148,12 +140,6 @@ class IngestReport:
                 lines.append(f"    {count:6d} × {reason}")
         if self.n_empty_rotations:
             lines.append(f"  {self.n_empty_rotations} vehicle rotations contained no usable trips.")
-        if self.n_unresolvable_routes:
-            lines.append(
-                f"  WARNING: {self.n_unresolvable_routes} routes could not be resolved at "
-                f"all, and the {self.n_rotations_on_unresolvable_routes} vehicle rotations "
-                f"running them were dropped. This should not happen; please report it."
-            )
         if self.n_degenerate_routes:
             lines.append(
                 f"  {self.n_degenerate_routes} routes never leave one station and were "

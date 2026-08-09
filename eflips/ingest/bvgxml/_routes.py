@@ -23,7 +23,7 @@ than one Punktfolge, so neither can be used.
 """
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from eflips.ingest.bvgxml._network import Network, StationRef
@@ -171,11 +171,6 @@ class RouteTable:
     #: The timings of each input route's Fahrzeitprofile, by ``(route, profile number)``.
     profiles: Dict[Tuple[RouteId, int], TimeProfile]
 
-    #: Routes whose own data is self-contradictory, so nothing could be made of them. Kept
-    #: apart from the degenerate ones: a degenerate route can be dropped without breaking
-    #: the vehicle's chain, this kind cannot, so its rotations have to go too.
-    unresolvable: Set[RouteId] = field(default_factory=set)
-
     #: Counts for the ingest summary.
     n_estimated_distance: int = 0
     n_reconstructed: int = 0
@@ -204,20 +199,16 @@ def resolve_routes(corpus: RawCorpus, network: Network) -> RouteTable:
         try:
             resolved = _resolve_one(route, route_id, line, corpus, network, table)
         except ValueError as e:
-            # One route whose own numbers contradict each other must not cost the user a
-            # 1,400-file import. Record it and carry on; the rotations that run it are
-            # dropped in :func:`~eflips.ingest.bvgxml._schedule.build_schedule`, because
-            # unlike a degenerate route this one cannot just be left out of the chain.
-            logger.warning(
-                "Route %d of line %s could not be resolved: %s Dropping the route and "
-                "every vehicle rotation that runs it.",
-                route.lfd_nr,
-                line,
-                e,
-            )
-            table.shape_of[route_id] = None
-            table.unresolvable.add(route_id)
-            continue
+            # Deliberately fatal. A route whose own numbers contradict each other has never
+            # been observed: 38,873 input routes across the three reference corpora — the
+            # 2023 R21 dump, Berlin 2025-06 (R23) and the 2026 UGFPL export — produce none.
+            # The only alternative is dropping every rotation that runs the route, which takes
+            # vehicles out of the scenario and so understates the fleet and its energy —
+            # the unsafe direction, and easy to miss in a log of thousands of lines.
+            # Failing costs nothing: resolve_routes() runs before ingest() opens its
+            # database session, so no partial import can result, and the parsed documents
+            # stay in the prepared pickle so a retry does not re-read the XML.
+            raise ValueError(f"Route {route.lfd_nr} of line {line} could not be resolved: {e}") from e
         if resolved is None:
             table.shape_of[route_id] = None
             continue

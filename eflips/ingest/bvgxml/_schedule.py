@@ -32,10 +32,6 @@ DEFAULT_TIMEZONE = ZoneInfo("Europe/Berlin")
 DEADHEAD_FAHRTARTEN = frozenset({"E", "A", "B"})
 
 
-class _UnresolvableRoute(Exception):
-    """A rotation runs a route :mod:`._routes` could make nothing of. Internal to this module."""
-
-
 @dataclass(frozen=True)
 class Stop:
     """One stop of a trip, at an absolute time."""
@@ -124,14 +120,7 @@ def build_schedule(
             report.note_truncated_rotation(raw_rotation, describe_truncation(raw_rotation))
             continue
 
-        try:
-            trips = _trips_of(raw_rotation, corpus, network, route_table, timezone, report)
-        except _UnresolvableRoute as e:
-            # Unlike a degenerate route, one that could not be resolved at all has no known
-            # endpoints, so leaving it out would break the vehicle's chain silently. Drop
-            # the whole rotation instead, the same way a truncated one is dropped.
-            report.note_rotation_on_unresolvable_route(raw_rotation, str(e))
-            continue
+        trips = _trips_of(raw_rotation, corpus, network, route_table, timezone, report)
         if not trips:
             report.note_empty_rotation()
             continue
@@ -188,8 +177,6 @@ def _trips_of(
                     f"does have a Fahrtreihenfolge. The input zip is inconsistent."
                 )
             route_id = corpus.route_of_fahrt[fahrt_id]
-            if route_id in route_table.unresolvable:
-                raise _UnresolvableRoute(f"trip {fahrt_id} runs on a route that could not be resolved")
             route = route_table.route_for(route_id)
             if route is None:
                 # The route was dropped as degenerate. Its endpoints are the same station,
