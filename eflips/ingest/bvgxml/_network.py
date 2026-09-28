@@ -33,12 +33,11 @@ import logging
 import statistics
 from dataclasses import dataclass
 from enum import Enum
-from functools import lru_cache
-from typing import Dict, List, Mapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 from eflips.ingest.bvgxml._read import Netzpunkt, RawCorpus
 from eflips.ingest.bvgxml._xmldata import NetzpunktNetzpunkttyp
-from eflips.ingest.util import soldner_to_pointz
+from eflips.ingest.util import soldner_to_pointz, soldner_to_pointz_many
 
 #: A ``BPunkt``'s number is its ``Hst``'s number plus this. See the module docstring.
 BPUNKT_OFFSET = 1_000_000
@@ -132,6 +131,10 @@ class Network:
         self.stations = stations
         self.segment_length = segment_length
         self._adjacency: Optional[Dict[int, List[Tuple[int, int]]]] = None
+        #: PostGIS geometry strings by Soldner ``(x, y)``, filled by :meth:`prefetch_geoms`.
+        #: The conversion performs a network altitude lookup, so it is done for all points of
+        #: an import in one batch rather than once per route that calls at them.
+        self._geom_by_xy: Dict[Tuple[int, int], str] = {}
 
     def station_of(self, number: int) -> StationRef:
         """The station a grid point belongs to."""
@@ -149,8 +152,7 @@ class Network:
 
     def geom_of_point(self, number: int) -> str:
         """The PostGIS geometry of one grid point."""
-        point = self.grid_points[number]
-        return _point_geom(point.x, point.y)
+        return self._geom(self._point_xy(number))
 
     def geom_of_station(self, ref: StationRef) -> str:
         """
@@ -159,28 +161,43 @@ class Network:
         The median (rather than the mean) keeps the station on top of one of its own
         platforms even when one member is an outlier.
         """
+        return self._geom(self._station_xy(ref))
+
+    def prefetch_geoms(self, point_numbers: Iterable[int], station_refs: Iterable[StationRef]) -> None:
+        """
+        Resolve the geometries of many grid points and stations with a single altitude lookup.
+
+        Call this with everything an import is going to write before the first
+        :meth:`geom_of_point` / :meth:`geom_of_station`; those then only read the cache.
+
+        :param point_numbers: the grid points whose geometry will be needed
+        :param station_refs: the stations whose geometry will be needed
+        """
+        wanted = [self._point_xy(number) for number in point_numbers]
+        wanted.extend(self._station_xy(ref) for ref in station_refs)
+        missing = [xy for xy in dict.fromkeys(wanted) if xy not in self._geom_by_xy]
+        if missing:
+            geoms = soldner_to_pointz_many(missing)
+            self._geom_by_xy.update((xy, geoms[xy]) for xy in missing)
+
+    def _point_xy(self, number: int) -> Tuple[int, int]:
+        point = self.grid_points[number]
+        return point.x, point.y
+
+    def _station_xy(self, ref: StationRef) -> Tuple[int, int]:
         members = [self.grid_points[number] for number in self.stations[ref].members]
-        return _point_geom(
+        return (
             int(statistics.median(p.x for p in members)),
             int(statistics.median(p.y for p in members)),
         )
 
-
-#: Bound on the process-wide coordinate cache below. A full Berlin import has about 7,000
-#: distinct coordinates, so this holds several imports' worth without growing unboundedly
-#: in a long-running server.
-_GEOM_CACHE_SIZE = 200_000
-
-
-@lru_cache(maxsize=_GEOM_CACHE_SIZE)
-def _point_geom(x: int, y: int) -> str:
-    """
-    Convert Soldner millimetres to a PostGIS geometry, memoised.
-
-    Memoisation matters: the conversion may perform a network altitude lookup, and one
-    import asks for the same few thousand coordinates once per route that calls at them.
-    """
-    return soldner_to_pointz(x, y)
+    def _geom(self, xy: Tuple[int, int]) -> str:
+        """The cached geometry of one Soldner coordinate, looked up on its own if not prefetched."""
+        geom = self._geom_by_xy.get(xy)
+        if geom is None:
+            geom = soldner_to_pointz(*xy)
+            self._geom_by_xy[xy] = geom
+        return geom
 
 
 def build_network(corpus: RawCorpus) -> Network:

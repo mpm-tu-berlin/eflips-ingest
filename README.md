@@ -41,13 +41,22 @@ covering a specific data source. Use them via the API described below.
 Supported sources:
 
 - `eflips.ingest.bvgxml.BvgxmlIngester`: XML files emitted by BVG's proprietary software.
-  - Requires at least `GOOGLE_MAPS_API_KEY`, also `OPENELEVATION_URL` is suggested to save money on Google Maps API calls.
   - Known Limitations:
     - The source data is known to contain some partial rotations of the bus routes. These are imported, which may lead to errors when creating a depot for each start and end spot, as some roations start/end at spots that are not depots.
     - Some routes that are going from the same stop to the stop itself are not imported, as they are considered to be invalid.
     - Some route's distance and time is fudged, when it is found to be unrealistically short or long.
 - `eflips.ingest.vdv.VdvIngester`: VDV 451/452 archives.
 - `eflips.ingest.gtfs.GtfsIngester`: GTFS feeds.
+
+### Altitude lookups
+
+All ingesters store stations and route shapes with an altitude (the model's geometries are `POINT Z` / `LINESTRING Z`).
+Altitudes are looked up through `eflips.model.util.get_altitudes`, which batches all coordinates of an import into as few
+requests as possible and caches results on disk. The environment variables involved:
+
+- `GOOGLE_MAPS_API_KEY`: required for real altitudes. The Google Elevation API is billed per request; one request carries up to 512 points.
+- `OPENELEVATION_URL`: optional. If set, an [Open-Elevation](https://github.com/Jorl17/open-elevation) server is queried first and only the points it cannot answer go to Google.
+- `ELEVATION_DUMMY_MODE=True`: skip all lookups and store a dummy altitude of 9999 m. This is what the test suite and CI use.
 
 ### API
 
@@ -93,8 +102,7 @@ Testing is done using the `pytest` framework with tests located in the `tests`di
 ```bash
    export PYTHONPATH=tests:. # To make sure that the tests can find the eflips package
    export DATABASE_URL=postgis://postgres:postgres@localhost:5432/postgres # Or whatever your database URL is
-   export GOOGLE_MAPS_API_KEY=put_your_api_key_here # Required for some tests
-   export OPENELEVATION_URL=put_your_url_here # Optional, required for some tests
+   export ELEVATION_DUMMY_MODE=True # Skip altitude lookups; the tests never need real altitudes
    pytest
 ```
 

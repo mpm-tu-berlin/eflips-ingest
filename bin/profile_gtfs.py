@@ -26,7 +26,7 @@ from pathlib import Path
 from uuid import UUID
 
 # Bypass network altitude lookups by enabling the dummy mode that
-# eflips.model.util.geometry.get_altitude honors via env var.
+# eflips.model.util.geometry.get_altitudes honors via env var.
 os.environ.setdefault("ELEVATION_DUMMY_MODE", "True")
 
 from eflips.model import Base, create_engine, setup_database  # noqa: E402

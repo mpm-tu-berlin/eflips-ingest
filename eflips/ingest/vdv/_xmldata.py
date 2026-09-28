@@ -11,12 +11,14 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from pyproj import Geod
 
 from eflips.model import AssocRouteStation, Line, Rotation, Route, Scenario, Station, VehicleType
-from eflips.model.util import geometry_has_z, get_altitude
+from eflips.model.util import geometry_has_z
+
+from eflips.ingest.util import altitude_map
 
 PrimaryKey = Tuple[int | date | str, ...]
 """Type alias for the opaque tuple primary keys produced by VDV objects."""
@@ -664,10 +666,8 @@ class RecOrt(VdvBaseObjectWithONR):
             assert isinstance(data["ORT_POS_HOEHE"], int), "The `ORT_POS_HOEHE` should be an integer."
             altitude: int | None = data["ORT_POS_HOEHE"]
         else:
-            if latitude is not None and longitude is not None:
-                altitude = int(round(get_altitude((latitude, longitude))))
-            else:
-                altitude = None
+            # Filled in for all records at once by fill_missing_altitudes() after parsing.
+            altitude = None
 
         assert isinstance(data["BASIS_VERSION"], int), "The `basis_version` should be an integer."
         assert isinstance(data["ONR_TYP_NR"], int), "The `onr_typ_nr` should be an integer."
@@ -704,6 +704,29 @@ class RecOrt(VdvBaseObjectWithONR):
             longitude=longitude,
             altitude=altitude,
         )
+
+    @classmethod
+    def fill_missing_altitudes(cls, rec_orts: Sequence["RecOrt"]) -> None:
+        """
+        Look up the altitude of every record that has coordinates but no ``ORT_POS_HOEHE``.
+
+        This is done for all records in one batched request rather than per record while
+        parsing, because the elevation API is billed per request.
+
+        :param rec_orts: the parsed records; altitudes are set in place
+        """
+        todo: List[Tuple["RecOrt", Tuple[float, float]]] = [
+            (r, (r.latitude, r.longitude))
+            for r in rec_orts
+            if r.altitude is None and r.latitude is not None and r.longitude is not None
+        ]
+        if not todo:
+            return
+        altitude_by_latlon = altitude_map(latlon for _, latlon in todo)
+        if not altitude_by_latlon:
+            return
+        for rec_ort, latlon in todo:
+            rec_ort.altitude = int(round(altitude_by_latlon[latlon]))
 
     @classmethod
     def list_of_stations(cls, rec_orts: List["RecOrt"], scenario: Scenario) -> Dict[PrimaryKey, Station]:
@@ -748,6 +771,8 @@ class RecOrt(VdvBaseObjectWithONR):
                     altitude = sum(r.altitude for r in grouped_rec_orts) / n  # type: ignore[misc]
                     geom: Optional[str] = f"POINTZ({longitude} {latitude} {altitude})"
                 else:
+                    # Only reached when the model carries no Z: fill_missing_altitudes() guarantees
+                    # an altitude for every record with coordinates otherwise.
                     geom = f"POINT({longitude} {latitude})"
             else:
                 geom = None

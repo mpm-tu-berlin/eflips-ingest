@@ -754,6 +754,45 @@ class TestSchedule:
         assert "were not imported" in summary
 
 
+class TestNetworkGeoms:
+    def test_prefetch_resolves_everything_in_one_batch(self, corpus, resolved, monkeypatch):
+        """After prefetch_geoms, geom_of_point / geom_of_station never look a point up on its own."""
+        _, _, _, schedule = resolved
+        network = build_network(corpus)
+        calls = []
+
+        def fake_many(xys):
+            xys = list(xys)
+            calls.append(xys)
+            return {xy: f"SRID=4326;POINTZ({xy[0]} {xy[1]} 0)" for xy in xys}
+
+        def no_single_lookup(x, y):  # pragma: no cover
+            raise AssertionError(f"single lookup for {(x, y)} after prefetch")
+
+        monkeypatch.setattr("eflips.ingest.bvgxml._network.soldner_to_pointz_many", fake_many)
+        monkeypatch.setattr("eflips.ingest.bvgxml._network.soldner_to_pointz", no_single_lookup)
+
+        point_numbers = {stop.grid_point for route in schedule.routes for stop in route.stops}
+        network.prefetch_geoms(point_numbers, schedule.stations)
+        assert len(calls) == 1
+        assert len(calls[0]) == len(set(calls[0])), "the batch must be de-duplicated"
+
+        for number in point_numbers:
+            assert network.geom_of_point(number).startswith("SRID=4326;POINTZ(")
+        for ref in schedule.stations:
+            assert network.geom_of_station(ref).startswith("SRID=4326;POINTZ(")
+        assert len(calls) == 1
+
+    def test_geom_without_prefetch_falls_back_to_single_lookup(self, corpus, resolved, monkeypatch):
+        _, _, _, schedule = resolved
+        network = build_network(corpus)
+        monkeypatch.setattr(
+            "eflips.ingest.bvgxml._network.soldner_to_pointz", lambda x, y: f"SRID=4326;POINTZ({x} {y} 1)"
+        )
+        number = next(iter(stop.grid_point for route in schedule.routes for stop in route.stops))
+        assert network.geom_of_point(number).endswith(" 1)")
+
+
 class TestBvgxmlIngester(BaseIngester):
     @pytest.fixture(autouse=True)
     def disable_altitude_lookups(self, monkeypatch) -> None:

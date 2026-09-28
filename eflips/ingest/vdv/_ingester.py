@@ -634,6 +634,10 @@ class VdvIngester(AbstractIngester):
         for tbl in all_tables:
             all_data[tbl] = import_vdv452_table_records(all_tables[tbl])
 
+        # Records without ORT_POS_HOEHE get their altitude from one batched lookup.
+        if VDV_Table_Name.REC_ORT in all_data:
+            RecOrt.fill_missing_altitudes(cast(List[RecOrt], all_data[VDV_Table_Name.REC_ORT]))
+
         if debug.enabled:
             for tbl_name, rows in all_data.items():
                 debug.log("table_loaded", table=tbl_name.value, row_count=len(rows))

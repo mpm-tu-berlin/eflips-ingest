@@ -78,7 +78,7 @@ if __name__ == "__main__":
         "--real-altitude",
         action="store_true",
         help="Look up real station altitudes (needs OPENELEVATION_URL or GOOGLE_MAPS_API_KEY set). "
-        "By default this script uses eflips-model's dummy altitude (always 0m), same as the test suite.",
+        "By default this script uses eflips-model's dummy altitude (always 9999 m), same as the test suite.",
     )
     args = parser.parse_args()
 

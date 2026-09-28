@@ -844,6 +844,36 @@ class TestFromDictMethods:
         assert abs(obj.latitude - 52.519) < 1e-6  # type: ignore[operator]
         assert obj.altitude == 100
 
+    def test_rec_ort_without_hoehe_has_no_altitude_until_filled(self, monkeypatch) -> None:
+        """Parsing never looks altitudes up; fill_missing_altitudes does it for all records at once."""
+        calls = []
+
+        def fake_get_altitudes(latlons):
+            calls.append(list(latlons))
+            return [120.4 + index for index in range(len(latlons))]
+
+        monkeypatch.delenv("ELEVATION_DUMMY_MODE", raising=False)
+        monkeypatch.setattr("eflips.ingest.util.get_altitudes", fake_get_altitudes)
+
+        base = {k: v for k, v in self._base_ort().items() if k != "ORT_POS_HOEHE"}
+        with_hoehe = RecOrt.from_dict({**self._base_ort(), "WGS_XKOOR": 13.0, "WGS_YKOOR": 52.0})
+        missing_a = RecOrt.from_dict({**base, "ORT_NR": 501, "WGS_XKOOR": 13.351, "WGS_YKOOR": 52.519})
+        missing_b = RecOrt.from_dict({**base, "ORT_NR": 502, "WGS_XKOOR": 13.4, "WGS_YKOOR": 52.6})
+        missing_dup = RecOrt.from_dict({**base, "ORT_NR": 503, "WGS_XKOOR": 13.351, "WGS_YKOOR": 52.519})
+        no_coords = RecOrt.from_dict({**base, "ORT_NR": 504})
+        assert calls == []
+        assert missing_a.altitude is None and no_coords.altitude is None
+        assert with_hoehe.altitude == 100
+
+        RecOrt.fill_missing_altitudes([with_hoehe, missing_a, missing_b, missing_dup, no_coords])
+
+        assert len(calls) == 1
+        assert calls[0] == [(52.519, 13.351), (52.6, 13.4)]
+        assert with_hoehe.altitude == 100
+        assert missing_a.altitude == 120 and missing_dup.altitude == 120
+        assert missing_b.altitude == 121
+        assert no_coords.altitude is None
+
     def test_rec_ort_ort_pos_xy(self) -> None:
         d = {**self._base_ort(), "ORT_POS_X": 13351000, "ORT_POS_Y": 52519000}
         obj = RecOrt.from_dict(d)
