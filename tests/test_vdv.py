@@ -171,6 +171,11 @@ def abspath_to_testfile(testfile_name: str) -> Path:
 
 
 class TestVdvIngester(BaseIngester):
+    @pytest.fixture(autouse=True)
+    def disable_altitude_lookups(self, monkeypatch) -> None:
+        """Bypass network altitude lookups for all tests in this class."""
+        monkeypatch.setenv("ELEVATION_DUMMY_MODE", "True")
+
     @pytest.fixture()
     def ingester(self) -> VdvIngester:
         return VdvIngester(self.database_url)

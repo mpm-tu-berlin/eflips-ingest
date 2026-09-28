@@ -103,6 +103,37 @@ class TestGtfsIngester(BaseIngester):
     # Required Abstract Methods
     # ====================
 
+    def test_build_route_geometries_batches_altitude_lookups(self, ingester, swu_feed, monkeypatch) -> None:
+        """All shape vertices are resolved in a single get_altitudes call, and the Z values land in order."""
+        from shapely.geometry import LineString
+
+        from eflips.model.util import geometry_has_z
+
+        calls = []
+
+        def fake_get_altitudes(latlons):
+            calls.append(list(latlons))
+            return [float(index) for index in range(len(latlons))]
+
+        monkeypatch.delenv("ELEVATION_DUMMY_MODE")
+        monkeypatch.setattr("eflips.ingest.util.get_altitudes", fake_get_altitudes)
+
+        feed = gk.read_feed(swu_feed, dist_units="m")
+        geometries = ingester.build_route_geometries(feed)
+        assert geometries is not None and len(geometries) > 0
+        if not geometry_has_z():
+            assert calls == []
+            return
+
+        assert len(calls) == 1
+        unique_vertices = list(dict.fromkeys(calls[0]))
+        assert len(calls[0]) == len(unique_vertices), "the batch must be de-duplicated"
+        altitude_by_latlon = {latlon: float(index) for index, latlon in enumerate(unique_vertices)}
+        for geom in geometries.values():
+            assert isinstance(geom, LineString) and geom.has_z
+            for lon, lat, z in geom.coords:
+                assert z == altitude_by_latlon[(lat, lon)]
+
     def test_prepare(self, ingester, swu_feed) -> None:
         """
         Test the prepare method (required by BaseIngester).

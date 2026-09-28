@@ -57,6 +57,14 @@ def emit(
         if progress_callback:
             progress_callback(min(1.0, max(0.0, fraction)))
 
+    # Every geometry the write below needs, resolved up front: the conversion looks altitudes
+    # up over the network, and one batched request is what keeps that affordable.
+    network.prefetch_geoms(
+        {stop.grid_point for route in schedule.routes for stop in route.stops},
+        schedule.stations,
+    )
+    report(0.02)
+
     lines: Dict[str, eflips.model.Line] = {}
     for name in schedule.lines:
         line = eflips.model.Line(scenario_id=scenario_id, name=name)

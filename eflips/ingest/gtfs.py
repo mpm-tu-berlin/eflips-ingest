@@ -41,7 +41,8 @@ from shapely.geometry import Point  # type: ignore [import-untyped]
 from sqlalchemy.orm import Session
 
 from eflips.ingest.base import AbstractIngester
-from eflips.model.util import get_altitude, geometry_has_z
+from eflips.ingest.util import altitude_map
+from eflips.model.util import geometry_has_z
 
 # Single shared geodesic helper. WGS84 matches the GTFS coordinate system.
 _GEOD = Geod(ellps="WGS84")
@@ -515,6 +516,13 @@ class GtfsIngester(AbstractIngester):
             self.logger.info("Creating Station objects from GTFS stops")
             stops_df = feed.stops
             stops_by_id = {row["stop_id"]: row for row in stops_df.to_dict("records")}
+            # One batched altitude lookup for every stop with coordinates. Parent stations are
+            # rows of the same table, so they are covered as well.
+            altitude_by_latlon = altitude_map(
+                (float(row["stop_lat"]), float(row["stop_lon"]))
+                for row in stops_by_id.values()
+                if pd.notna(row.get("stop_lat")) and pd.notna(row.get("stop_lon"))
+            )
             for stop_row in stops_by_id.values():
                 stop_id = stop_row["stop_id"]
                 stop_name = stop_row["stop_name"]
@@ -568,7 +576,7 @@ class GtfsIngester(AbstractIngester):
 
                     # If geometry type has Z, we need to get altitude
                     if geometry_has_z():
-                        z = get_altitude((stop_lat, stop_lon))
+                        z = altitude_by_latlon[(float(stop_lat), float(stop_lon))]
                         point = Point(stop_lon, stop_lat, z)
 
                     geom = from_shape(point, srid=4326)
@@ -1468,17 +1476,20 @@ class GtfsIngester(AbstractIngester):
             assert isinstance(geometry_by_shape, dict)
             self.logger.info(f"Successfully built {len(geometry_by_shape)} route geometries")
             if geometry_has_z():
-                # We will need to turn each LINTESTRING into a LINESTRING Z by looking up the Z values for all points
+                # We will need to turn each LINESTRING into a LINESTRING Z by looking up the Z values for all
+                # points. All vertices of all shapes go into one batched lookup.
                 self.logger.info("Converting route geometries to LINESTRING Z format")
+                for geom in geometry_by_shape.values():
+                    assert isinstance(geom, LineString)
+                altitude_by_latlon = altitude_map(
+                    (lat, lon) for geom in geometry_by_shape.values() for lon, lat in geom.coords
+                )
+                self.logger.info(f"Looked up altitudes for {len(altitude_by_latlon)} distinct shape vertices")
                 geometry_by_shape_z: Dict[str, LineString] = {}
                 for shape_id, geom in geometry_by_shape.items():
-                    assert isinstance(geom, LineString)
-                    coords_with_z = []
-                    for lon, lat in geom.coords:
-                        z = get_altitude((lat, lon))
-                        coords_with_z.append((lon, lat, z))
-                    geom_z = LineString(coords_with_z)
-                    geometry_by_shape_z[shape_id] = geom_z
+                    geometry_by_shape_z[shape_id] = LineString(
+                        [(lon, lat, altitude_by_latlon[(lat, lon)]) for lon, lat in geom.coords]
+                    )
                 return geometry_by_shape_z
             else:
                 return geometry_by_shape
