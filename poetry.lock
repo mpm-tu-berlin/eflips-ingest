@@ -299,24 +299,6 @@ files = [
 ]
 
 [[package]]
-name = "click-default-group"
-version = "1.2.4"
-description = "click_default_group"
-optional = false
-python-versions = ">=2.7"
-groups = ["main"]
-files = [
-    {file = "click_default_group-1.2.4-py2.py3-none-any.whl", hash = "sha256:9b60486923720e7fc61731bdb32b617039aba820e22e1c88766b1125592eaa5f"},
-    {file = "click_default_group-1.2.4.tar.gz", hash = "sha256:eb3f3c99ec0d456ca6cd2a7f08f7d4e91771bef51b01bdd9580cc6450fe1251e"},
-]
-
-[package.dependencies]
-click = "*"
-
-[package.extras]
-test = ["pytest"]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 description = "Cross-platform colored terminal text."
@@ -340,24 +322,6 @@ files = [
     {file = "distlib-0.4.4-py2.py3-none-any.whl", hash = "sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638"},
     {file = "distlib-0.4.4.tar.gz", hash = "sha256:ca4175b4ac7f71223cc30ed7248c45d2b38c2439d8ee6e498ab67ed63cf3508d"},
 ]
-
-[[package]]
-name = "docformatter"
-version = "1.7.8"
-description = "Formats docstrings to follow PEP 257"
-optional = false
-python-versions = "<4.0,>=3.10"
-groups = ["main"]
-files = [
-    {file = "docformatter-1.7.8-py3-none-any.whl", hash = "sha256:8e518948bacb8d8df5d5f625060e214a200f0a908d8e6797c9ebbdd2cdd17467"},
-    {file = "docformatter-1.7.8.tar.gz", hash = "sha256:6589b62a8f38c62c4c8c84cb1afa296af007c88c959e4c9d25c74c1f933c4dbf"},
-]
-
-[package.dependencies]
-charset_normalizer = ">=3.0.0,<4.0.0"
-
-[package.extras]
-tomli = ["tomli (>=2.0.0,<3.0.0) ; python_version < \"3.11\""]
 
 [[package]]
 name = "eflips-model"
@@ -2524,32 +2488,30 @@ python-discovery = ">=1.6.1"
 
 [[package]]
 name = "xsdata"
-version = "24.12"
+version = "26.10"
 description = "Python XML Binding"
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "xsdata-24.12-py3-none-any.whl", hash = "sha256:2656cfa7240d215a4f2ff30abeebee9afad1e72b805f3ed29ded518a7d3785ee"},
-    {file = "xsdata-24.12.tar.gz", hash = "sha256:67c16c032bbde82c064f6c28cdf6b4f8adcbd0498e2668a346ff8e52a3a200b4"},
+    {file = "xsdata-26.10-py3-none-any.whl", hash = "sha256:37a697d60db1396a0431750486744a7e0491fd60669751d95e3ede08f034e0c6"},
+    {file = "xsdata-26.10.tar.gz", hash = "sha256:4bc944d9fa3955f84ecebb83c677e2f681687c002a777731a21104e8360a7522"},
 ]
 
 [package.dependencies]
-click = {version = ">=5.0", optional = true, markers = "extra == \"cli\""}
-click-default-group = {version = ">=1.2", optional = true, markers = "extra == \"cli\""}
-docformatter = {version = ">=1.7.2", optional = true, markers = "extra == \"cli\""}
-jinja2 = {version = ">=2.10", optional = true, markers = "extra == \"cli\""}
-lxml = {version = ">=4.5.0", optional = true, markers = "extra == \"lxml\""}
-ruff = {version = ">=0.3.0", optional = true, markers = "extra == \"cli\""}
-toposort = {version = ">=1.5", optional = true, markers = "extra == \"cli\""}
-typing-extensions = ">=4.7.0"
+click = {version = ">=8.0.0", optional = true, markers = "extra == \"cli\""}
+jinja2 = {version = ">=3.0.0", optional = true, markers = "extra == \"cli\""}
+lxml = {version = ">=5.0.0", optional = true, markers = "extra == \"lxml\""}
+ruff = {version = ">=0.9.8", optional = true, markers = "extra == \"cli\""}
+toposort = {version = ">=1.9", optional = true, markers = "extra == \"cli\""}
+typing-extensions = ">=4.12.0"
 
 [package.extras]
-cli = ["click (>=5.0)", "click-default-group (>=1.2)", "docformatter (>=1.7.2)", "jinja2 (>=2.10)", "ruff (>=0.3.0)", "toposort (>=1.5)"]
-docs = ["markdown-exec[ansi]", "mkdocs", "mkdocs-gen-files", "mkdocs-literate-nav", "mkdocs-material", "mkdocs-minify-plugin", "mkdocstrings[python]", "pymdownx-superfence-filter-lines"]
-lxml = ["lxml (>=4.5.0)"]
-soap = ["requests"]
-test = ["pre-commit", "pytest", "pytest-benchmark", "pytest-cov"]
+cli = ["click (>=8.0.0)", "jinja2 (>=3.0.0)", "ruff (>=0.9.8)", "toposort (>=1.9)"]
+docs = ["markdown-exec[ansi]", "mkdocs", "mkdocs-gen-files", "mkdocs-literate-nav", "mkdocs-material", "mkdocs-minify-plugin", "mkdocstrings[python]"]
+lxml = ["lxml (>=5.0.0)"]
+soap = ["requests (>=2.28.0)"]
+test = ["pre-commit (>=3.0.0)", "pytest (>=8.0.0)", "pytest-benchmark (>=4.0.0)", "pytest-cov (>=5.0.0)"]
 
 [[package]]
 name = "xyzservices"
@@ -2566,4 +2528,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.16"
-content-hash = "c20b1b53cfe188588209ac8a8eff1deec7b679165d76d5fd92013bcb67d14aae"
+content-hash = "0062a9f79b06e5b1e06e8db82f9792de077890c123d074c8b7e7225e592e0711"
