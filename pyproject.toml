@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "eflips-ingest"
-version = "2.4.0"
+version = "2.4.1"
 description = "A collection of import scripts for converting bus schedule data into the [eflips-model](https://github.com/mpm-tu-berlin/eflips-model) data format."
 authors = [
     "Ludger Heide <ludger.heide@lhtechnologies.de>"
@@ -11,6 +11,7 @@ homepage = "https://github.com/mpm-tu-berlin/eflips-ingest"
 repository = "https://github.com/mpm-tu-berlin/eflips-ingest"
 packages = [{ include = "eflips/ingest" }]
 include = ["LICENSE.md"]
+exclude = ["eflips/ingest/**/CLAUDE.md"]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.15"
